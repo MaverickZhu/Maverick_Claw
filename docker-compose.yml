@@ -1,0 +1,148 @@
+# Maverick Claw - Docker Compose 配置
+# 本地数据库部署，避免供应链投毒风险
+
+name: maverick-claw
+
+services:
+  # Redis - 用于 BullMQ 消息队列
+  redis:
+    image: redis:7-alpine
+    container_name: mc-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - maverick-claw-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL - 可选的远程数据库（替代 SQLite）
+  postgres:
+    image: postgres:16-alpine
+    container_name: mc-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER:-maverick}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-maverick_claw_secure_2024}
+      POSTGRES_DB: ${DB_NAME:-maverick_claw}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - maverick-claw-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-maverick} -d ${DB_NAME:-maverick_claw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RedisInsight - Redis 可视化工具（可选）
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: mc-redis-insight
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight_data:/data
+    networks:
+      - maverick-claw-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  # pgAdmin - PostgreSQL 可视化工具（可选）
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mc-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@maverick.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - maverick-claw-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  # Prometheus - 指标采集（可选）
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: mc-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - maverick-claw-network
+    profiles:
+      - monitoring
+
+  # Grafana - 指标可视化（可选）
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: mc-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin123}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - maverick-claw-network
+    depends_on:
+      prometheus:
+        condition: service_started
+    profiles:
+      - monitoring
+
+volumes:
+  redis_data:
+    name: maverick-claw-redis-data
+  postgres_data:
+    name: maverick-claw-postgres-data
+  redisinsight_data:
+    name: maverick-claw-redisinsight-data
+  pgadmin_data:
+    name: maverick-claw-pgadmin-data
+  prometheus_data:
+    name: maverick-claw-prometheus-data
+  grafana_data:
+    name: maverick-claw-grafana-data
+
+networks:
+  maverick-claw-network:
+    name: maverick-claw-network
+    driver: bridge

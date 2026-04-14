@@ -1,0 +1,21 @@
+{
+  "name": "@maverick-claw/plugin-deepseek",
+  "version": "0.1.0",
+  "description": "DeepSeek model provider for Maverick_Claw",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@maverick-claw/core": "workspace:*",
+    "@maverick-claw/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint Typecheck Build Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test shared
+        run: pnpm --filter @maverick-claw/shared run test -- --passWithNoTests
+
+      - name: Test core
+        run: pnpm --filter @maverick-claw/core run test -- --passWithNoTests
+
+      - name: Test cli
+        run: pnpm --filter @maverick-claw/cli run test -- --passWithNoTests
+
+      - name: Test web-ui
+        run: pnpm --filter @maverick-claw/web-ui run test -- --passWithNoTests
