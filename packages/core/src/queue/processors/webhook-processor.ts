@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import type { WebhookDeliveryJobData, JobResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
+import { StandardErrorCode, ensureStandardError } from '../../errors/index.js';
 
 export interface WebhookProcessorOptions {
   defaultTimeout?: number;
@@ -31,23 +32,36 @@ export function createWebhookProcessor(options: WebhookProcessorOptions = {}) {
         success: result.success,
         data: { statusCode: result.statusCode, response: result.response },
         error: result.error,
+        errorCode: result.errorCode,
+        errorDetails: result.errorDetails,
         processingTime: Date.now() - startTime,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      
       // Determine if we should retry
       const shouldRetry = job.attemptsMade < (data.maxRetries || maxRetries) - 1;
+      const standardError = ensureStandardError(error, {
+        code: StandardErrorCode.QueueJobFailed,
+        message: 'Webhook delivery failed',
+        statusCode: 500,
+        preserveMessage: true,
+        retryable: shouldRetry,
+        details: {
+          webhookId: data.webhookId,
+          url: data.url,
+          attempt: job.attemptsMade + 1,
+        },
+      });
       
       logger.error({
-        err: error,
+        err: standardError,
         jobId: job.id,
         attempt: job.attemptsMade + 1,
         willRetry: shouldRetry,
+        errorCode: standardError.code,
       }, 'Webhook delivery failed');
 
       // Throw to trigger retry
-      throw error;
+      throw standardError;
     }
   };
 }
@@ -55,7 +69,14 @@ export function createWebhookProcessor(options: WebhookProcessorOptions = {}) {
 async function deliverWebhook(
   data: WebhookDeliveryJobData,
   timeout: number
-): Promise<{ success: boolean; statusCode?: number; response?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  statusCode?: number;
+  response?: string;
+  error?: string;
+  errorCode?: string;
+  errorDetails?: unknown;
+}> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -88,6 +109,10 @@ async function deliverWebhook(
         statusCode: response.status,
         response: responseText,
         error: `HTTP ${response.status}: ${responseText}`,
+        errorCode: StandardErrorCode.UpstreamError,
+        errorDetails: {
+          statusCode: response.status,
+        },
       };
     }
 
@@ -103,6 +128,8 @@ async function deliverWebhook(
       return {
         success: false,
         error: 'Request timeout',
+        errorCode: StandardErrorCode.UpstreamError,
+        errorDetails: { timeout },
       };
     }
 

@@ -72,6 +72,15 @@ export class SessionManager {
     return this.rowToSession(row);
   }
 
+  async getSessionWithMessageCount(id: string): Promise<Session | null> {
+    const session = await this.getSession(id);
+    if (!session) {
+      return null;
+    }
+    const [hydrated] = await this.attachMessageCount([session]);
+    return hydrated ?? null;
+  }
+
   async listSessions(filter: SessionFilter = {}): Promise<Session[]> {
     let sql = 'SELECT * FROM sessions';
     const params: (string | number)[] = [];
@@ -96,7 +105,12 @@ export class SessionManager {
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(...params) as SessionRow[];
 
-    return rows.map(row => this.rowToSession(row));
+    return rows.map((row) => this.rowToSession(row));
+  }
+
+  async listSessionsWithMessageCount(filter: SessionFilter = {}): Promise<Session[]> {
+    const sessions = await this.listSessions(filter);
+    return this.attachMessageCount(sessions);
   }
 
   async updateSession(id: string, updates: Partial<Pick<Session, 'title' | 'modelId'>>): Promise<void> {
@@ -154,7 +168,24 @@ export class SessionManager {
     return this.messageManager.getMessageCount(sessionId);
   }
 
+  async getMessageCounts(sessionIds: string[]): Promise<Record<string, number>> {
+    return this.messageManager.getMessageCounts(sessionIds);
+  }
+
   // Helpers
+
+  private async attachMessageCount(sessions: Session[]): Promise<Session[]> {
+    if (sessions.length === 0) {
+      return [];
+    }
+    const counts = await this.messageManager.getMessageCounts(
+      sessions.map((session) => session.id)
+    );
+    return sessions.map((session) => ({
+      ...session,
+      messageCount: counts[session.id] ?? 0,
+    }));
+  }
 
   private rowToSession(row: SessionRow): Session {
     return {

@@ -194,9 +194,41 @@ describe('Integration Tests', () => {
     expect(messages[0].content).toBe('Hello World');
   });
 
+  it('should include messageCount in sessions list', async () => {
+    const sessionResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Count Test' }),
+    });
+    expect(sessionResponse.status).toBe(201);
+    const session = await sessionResponse.json();
+
+    await fetch(`${baseUrl}/api/sessions/${session.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'msg-1' }),
+    });
+    await fetch(`${baseUrl}/api/sessions/${session.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'msg-2' }),
+    });
+
+    const listResponse = await fetch(`${baseUrl}/api/sessions`);
+    expect(listResponse.status).toBe(200);
+    const payload = await listResponse.json();
+    const target = payload.sessions.find((item: { id: string }) => item.id === session.id);
+
+    expect(target).toBeDefined();
+    expect(target.messageCount).toBe(2);
+  });
+
   it('should return 404 for non-existent session', async () => {
     const response = await fetch(`${baseUrl}/api/sessions/non-existent-id`);
+    const payload = await response.json();
     expect(response.status).toBe(404);
+    expect(payload.errorCode).toBe('not_found');
+    expect(payload.requestId).toBeTruthy();
   });
 
   it('should reject invalid session data', async () => {
@@ -205,7 +237,9 @@ describe('Integration Tests', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 123 }), // Invalid type
     });
-    
+    const payload = await response.json();
     expect(response.status).toBe(400);
+    expect(payload.errorCode).toBe('validation_failed');
+    expect(payload.requestId).toBeTruthy();
   });
 });

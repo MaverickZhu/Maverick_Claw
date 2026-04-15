@@ -381,6 +381,36 @@ SENTRY_TRACES_SAMPLE_RATE=0.1
   - `parameterSupport.temperature`（`min/max/default`）
   - `registered`（当前进程是否已注册）与 `configuredModels`（配置中已声明模型）
 
+### 统一错误响应（新增）
+
+HTTP 路由在错误时统一返回以下结构：
+
+```json
+{
+  "error": "Session not found",
+  "errorCode": "not_found",
+  "requestId": "req-xxx",
+  "details": {
+    "sessionId": "abc"
+  }
+}
+```
+
+WebSocket `type='res'` 的失败响应兼容保留 `error` 字符串，同时新增结构化字段：
+
+```json
+{
+  "type": "res",
+  "id": "req-1",
+  "ok": false,
+  "error": "Unknown method: foo.bar",
+  "errorDetail": {
+    "code": "method_not_found",
+    "message": "Unknown method: foo.bar"
+  }
+}
+```
+
 ### 通道配置（Webhook / 飞书 / 钉钉）
 
 - 通道统一回调入口：`POST /api/webhooks/{channelId}`
@@ -491,6 +521,8 @@ Grafana 会自动加载预置看板：`Maverick Claw - 性能监控`。
 pnpm benchmark
 ```
 
+> 建议：做“回归对比”时优先使用 `pnpm --filter @maverick-claw/core start`（dist 运行）后再跑 benchmark；`dev/tsx watch` 模式更容易出现单轮抖动，影响门禁稳定性。
+
 可选参数示例：
 
 ```powershell
@@ -514,6 +546,12 @@ pnpm benchmark -- --skip-ws
 pnpm benchmark:compare -- --output-dir ../../benchmark-results --baseline "benchmark-2026-04-14T10-00-00-000Z.json" --candidate "benchmark-2026-04-14T10-30-00-000Z.json"
 ```
 
+使用仓库内置基线（推荐）：
+
+```powershell
+pnpm --filter @maverick-claw/core benchmark:compare -- --output-dir ../../benchmark-results --baseline ../../benchmark-baselines/core-baseline.json
+```
+
 默认阈值：
 
 - `minSuccessRate=99.5`
@@ -523,6 +561,15 @@ pnpm benchmark:compare -- --output-dir ../../benchmark-results --baseline "bench
 - `maxThroughputDrop=15%`
 
 若任一场景超过误差预算，命令会返回非零退出码（可直接用于 CI 门禁）。
+
+### 常规回归（CI）
+
+`GitHub Actions` 已接入常规性能回归，流程如下：
+
+1. 启动 `@maverick-claw/core`
+2. 执行基准场景（HTTP + WebSocket）
+3. 使用 `benchmark-baselines/core-baseline.json` 进行对比
+4. 上传 `benchmark-results/` 与 core 启动日志作为 artifact
 
 ### 监控栈停止
 

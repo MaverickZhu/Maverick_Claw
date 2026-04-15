@@ -1,6 +1,53 @@
 // WebSocket Protocol for Maverick_Claw Gateway
 // Based on OpenClaw protocol design, simplified for MVP
 
+export interface GatewayErrorDetail {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  modelId?: string;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+  messageCount?: number;
+}
+
+export interface SessionMessageSnapshot {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  createdAt: string | Date;
+}
+
+export interface SessionsListResponsePayload {
+  sessions: SessionSummary[];
+}
+
+export interface SessionMessagesResponsePayload {
+  messages: SessionMessageSnapshot[];
+}
+
+export interface ChatChunkEventPayload {
+  content: string;
+  done: boolean;
+  sessionId?: string;
+}
+
+export interface ChatCompleteEventPayload {
+  done: boolean;
+  sessionId?: string;
+}
+
+export interface ChatErrorEventPayload {
+  error: string;
+  errorCode?: string;
+  sessionId?: string;
+}
+
 // Connection & Handshake
 export interface ConnectRequest {
   type: 'connect';
@@ -19,6 +66,7 @@ export interface ConnectResponse {
   id: string;
   ok: boolean;
   error?: string;
+  errorDetail?: GatewayErrorDetail;
   payload?: {
     serverVersion: string;
     sessionToken?: string;
@@ -45,6 +93,7 @@ export interface GatewayResponse {
   id: string;
   ok: boolean;
   error?: string;
+  errorDetail?: GatewayErrorDetail;
   payload?: unknown;
 }
 
@@ -63,6 +112,7 @@ export interface GatewayError {
     code: string;
     message: string;
     requestId?: string;
+    details?: unknown;
   };
 }
 
@@ -133,8 +183,14 @@ export function createRequest(id: string, method: string, params: unknown): Gate
   return { type: 'req', id, method, params };
 }
 
-export function createResponse(id: string, ok: boolean, payload?: unknown, error?: string): GatewayResponse {
-  return { type: 'res', id, ok, payload, error };
+export function createResponse(
+  id: string,
+  ok: boolean,
+  payload?: unknown,
+  error?: string,
+  errorDetail?: GatewayErrorDetail
+): GatewayResponse {
+  return { type: 'res', id, ok, payload, error, errorDetail };
 }
 
 export function createEvent(event: string, payload: unknown): GatewayEvent {

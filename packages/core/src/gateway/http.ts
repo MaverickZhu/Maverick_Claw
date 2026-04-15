@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware, requireScopes } from '../auth/middleware.js';
 import { ADMIN_SCOPE, Scope } from '../auth/scopes.js';
@@ -23,6 +23,16 @@ import {
   updateStorageMetrics,
 } from '../monitoring/metrics.js';
 import { reportError } from '../monitoring/error-tracking.js';
+import {
+  StandardErrorCode,
+  createBadRequestError,
+  createNotFoundError,
+  createUnauthorizedError,
+  createValidationError,
+  ensureStandardError,
+  toHttpErrorBody,
+} from '../errors/index.js';
+import type { QueueName } from '../queue/types.js';
 
 // Validation schemas
 const CreateSessionSchema = z.object({
@@ -82,6 +92,65 @@ const UpdateChannelSchema = z
     message: '至少需要提供一个更新字段',
   });
 
+const IdParamSchema = z.object({
+  id: z.string().min(1),
+});
+
+const QueueNameSchema = z.enum([
+  'messages',
+  'ai-processing',
+  'notifications',
+  'webhook-delivery',
+]);
+
+const QueueNameParamSchema = z.object({
+  queueName: QueueNameSchema,
+});
+
+const AdapterIdParamSchema = z.object({
+  adapterId: z.string().min(1),
+});
+
+const UpdateSystemSchema = z
+  .object({
+    port: z.number().int().min(1).max(65535).optional(),
+    host: z.string().min(1).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: '至少需要提供一个更新字段',
+  });
+
+const UpdateAuthSchema = z
+  .object({
+    type: z.enum(['token', 'oauth', 'none']).optional(),
+    token: z.string().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: '至少需要提供一个更新字段',
+  });
+
+const AddModelSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  provider: z.string().min(1),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  enabled: z.boolean().optional(),
+  parameters: z.record(z.unknown()).optional(),
+});
+
+const UpdateModelSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    apiKey: z.string().optional(),
+    baseUrl: z.string().optional(),
+    enabled: z.boolean().optional(),
+    parameters: z.record(z.unknown()).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: '至少需要提供一个更新字段',
+  });
+
 interface ModelSelectionConfig {
   models: Array<{
     id: string;
@@ -114,6 +183,118 @@ function isWebhookCapableAdapter(adapter: unknown): adapter is WebhookCapableAda
   }
   const candidate = adapter as { processWebhook?: unknown };
   return typeof candidate.processWebhook === 'function';
+}
+
+interface HttpErrorFallback {
+  code: (typeof StandardErrorCode)[keyof typeof StandardErrorCode];
+  message: string;
+  statusCode: number;
+  details?: unknown;
+  preserveMessage?: boolean;
+}
+
+function sendHttpError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: unknown,
+  fallback: HttpErrorFallback
+): void {
+  const standardError = ensureStandardError(error, fallback);
+
+  if (standardError.statusCode >= 500) {
+    reportError(error, {
+      area: 'http.request',
+      requestId: request.id,
+      tags: {
+        method: request.method,
+        route: request.routeOptions?.url || request.url,
+        status_code: String(standardError.statusCode),
+        error_code: standardError.code,
+      },
+      extra: {
+        url: request.url,
+      },
+    });
+  }
+
+  const logPayload = {
+    requestId: request.id,
+    method: request.method,
+    url: request.url,
+    statusCode: standardError.statusCode,
+    errorCode: standardError.code,
+    err: standardError,
+  };
+  if (standardError.statusCode >= 500) {
+    logger.error(logPayload, 'HTTP request failed');
+  } else {
+    logger.warn(logPayload, 'HTTP request failed');
+  }
+
+  if (reply.sent) {
+    return;
+  }
+
+  reply.status(standardError.statusCode).send(toHttpErrorBody(standardError, request.id));
+}
+
+function sendInvalidRequestError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: unknown,
+  message: string
+): void {
+  sendHttpError(request, reply, error, {
+    code: StandardErrorCode.InvalidRequest,
+    message,
+    statusCode: 400,
+    preserveMessage: true,
+  });
+}
+
+function sendBadRequestError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  message: string,
+  details?: unknown
+): void {
+  sendHttpError(request, reply, createBadRequestError(message, details), {
+    code: StandardErrorCode.InvalidRequest,
+    message,
+    statusCode: 400,
+  });
+}
+
+function sendNotFoundError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  message: string,
+  details?: unknown
+): void {
+  sendHttpError(request, reply, createNotFoundError(message, details), {
+    code: StandardErrorCode.NotFound,
+    message,
+    statusCode: 404,
+  });
+}
+
+function parseRequestInput<T>(
+  schema: z.ZodSchema<T>,
+  input: unknown,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  message: string = 'Invalid request'
+): T | null {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    sendHttpError(request, reply, createValidationError(message, parsed.error.issues), {
+      code: StandardErrorCode.ValidationFailed,
+      message,
+      statusCode: 400,
+    });
+    return null;
+  }
+  return parsed.data;
 }
 
 export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
@@ -168,43 +349,19 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
 
   fastify.setErrorHandler((error, request, reply) => {
     applyHttpLogContext(request);
-    const statusCode =
+    const fallbackStatusCode =
       typeof error.statusCode === 'number' && error.statusCode >= 400
         ? error.statusCode
         : 500;
-
-    if (statusCode >= 500) {
-      reportError(error, {
-        area: 'http.request',
-        requestId: request.id,
-        tags: {
-          method: request.method,
-          route: request.routeOptions?.url || request.url,
-          status_code: String(statusCode),
-        },
-        extra: {
-          url: request.url,
-        },
-      });
-    }
-
-    logger.error(
-      {
-        requestId: request.id,
-        method: request.method,
-        url: request.url,
-        statusCode: error.statusCode,
-        err: error,
-      },
-      'HTTP request failed'
-    );
-
-    if (reply.sent) {
-      return;
-    }
-
-    reply.status(statusCode).send({
-      error: statusCode >= 500 ? 'Internal Server Error' : error.message,
+    sendHttpError(request, reply, error, {
+      code:
+        fallbackStatusCode >= 500
+          ? StandardErrorCode.InternalError
+          : StandardErrorCode.InvalidRequest,
+      message:
+        fallbackStatusCode >= 500 ? 'Internal Server Error' : 'Request failed',
+      statusCode: fallbackStatusCode,
+      preserveMessage: fallbackStatusCode < 500,
     });
   });
 
@@ -294,20 +451,23 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Auth routes
   fastify.post('/api/auth/login', async (request, reply) => {
-    const body = LoginRequestSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const body = parseRequestInput(LoginRequestSchema, request.body, request, reply, 'Invalid request');
+    if (!body) {
       return;
     }
 
-    const { password, scopes } = body.data;
+    const { password, scopes } = body;
     const config = configManager.get();
 
     // Simple password check (for MVP)
     // In production, use proper user management
     if (config.auth.type === 'token' && config.auth.token) {
       if (password !== config.auth.token) {
-        reply.status(401).send({ error: 'Invalid credentials' });
+        sendHttpError(request, reply, createUnauthorizedError('Invalid credentials'), {
+          code: StandardErrorCode.Unauthorized,
+          message: 'Invalid credentials',
+          statusCode: 401,
+        });
         return;
       }
     }
@@ -329,7 +489,7 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   // Sessions
   fastify.get('/api/sessions', { preHandler: [authMiddleware, requireScopes([Scope.SessionsRead])] }, async (request) => {
     const userId = request.user?.userId;
-    const sessions = await sessionManager.listSessions({ 
+    const sessions = await sessionManager.listSessionsWithMessageCount({
       userId,
       limit: 100,
     });
@@ -337,21 +497,20 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.post('/api/sessions', { preHandler: [authMiddleware, requireScopes([Scope.SessionsWrite])] }, async (request, reply) => {
-    const body = CreateSessionSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const body = parseRequestInput(CreateSessionSchema, request.body, request, reply, 'Invalid request');
+    if (!body) {
       return;
     }
 
     const config = configManager.get();
-    if (body.data.modelId && !hasEnabledModel(config, body.data.modelId)) {
-      reply.status(400).send({ error: 'Invalid modelId' });
+    if (body.modelId && !hasEnabledModel(config, body.modelId)) {
+      sendBadRequestError(request, reply, 'Invalid modelId');
       return;
     }
 
     const session = await sessionManager.createSession({
-      title: body.data.title,
-      modelId: body.data.modelId ?? resolveDefaultModel(config),
+      title: body.title,
+      modelId: body.modelId ?? resolveDefaultModel(config),
       userId: request.user?.userId,
     });
 
@@ -359,54 +518,61 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.get('/api/sessions/:id', { preHandler: [authMiddleware, requireScopes([Scope.SessionsRead])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const session = await sessionManager.getSession(id);
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid session id');
+    if (!params) {
+      return;
+    }
+    const session = await sessionManager.getSessionWithMessageCount(params.id);
     
     if (!session) {
-      reply.status(404).send({ error: 'Session not found' });
+      sendNotFoundError(request, reply, 'Session not found', { sessionId: params.id });
       return;
     }
 
-    // Get message count
-    session.messageCount = await messageManager.getMessageCount(id);
-    
     return session;
   });
 
   fastify.delete('/api/sessions/:id', { preHandler: [authMiddleware, requireScopes([Scope.SessionsWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    await sessionManager.deleteSession(id);
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid session id');
+    if (!params) {
+      return;
+    }
+    await sessionManager.deleteSession(params.id);
     reply.status(204).send();
   });
 
   // Messages
-  fastify.get('/api/sessions/:id/messages', { preHandler: [authMiddleware, requireScopes([Scope.MessagesRead])] }, async (request) => {
-    const { id } = request.params as { id: string };
-    const messages = await messageManager.listMessages(id);
+  fastify.get('/api/sessions/:id/messages', { preHandler: [authMiddleware, requireScopes([Scope.MessagesRead])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid session id');
+    if (!params) {
+      return;
+    }
+    const messages = await messageManager.listMessages(params.id);
     return { messages };
   });
 
   fastify.post('/api/sessions/:id/messages', { preHandler: [authMiddleware, requireScopes([Scope.MessagesWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const body = SendMessageSchema.safeParse(request.body);
-    
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid session id');
+    if (!params) {
+      return;
+    }
+    const body = parseRequestInput(SendMessageSchema, request.body, request, reply, 'Invalid request');
+    if (!body) {
       return;
     }
 
     // Verify session exists
-    const session = await sessionManager.getSession(id);
+    const session = await sessionManager.getSession(params.id);
     if (!session) {
-      reply.status(404).send({ error: 'Session not found' });
+      sendNotFoundError(request, reply, 'Session not found', { sessionId: params.id });
       return;
     }
 
     // Create user message
     const message = await messageManager.createMessage({
-      sessionId: id,
+      sessionId: params.id,
       role: 'user',
-      content: body.data.content,
+      content: body.content,
     });
 
     reply.status(201).send(message);
@@ -455,18 +621,17 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.post('/api/workflows/run', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
-    const body = RunWorkflowSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const body = parseRequestInput(RunWorkflowSchema, request.body, request, reply, 'Invalid request');
+    if (!body) {
       return;
     }
 
     try {
       const config = configManager.get();
-      let sessionId = body.data.sessionId;
+      let sessionId = body.sessionId;
       if (!sessionId) {
         const session = await sessionManager.createSession({
-          title: `工作流: ${body.data.name}`,
+          title: `工作流: ${body.name}`,
           modelId: resolveDefaultModel(config),
           userId: request.user?.userId,
         });
@@ -474,29 +639,27 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
       } else {
         const existing = await sessionManager.getSession(sessionId);
         if (!existing) {
-          if (body.data.createSessionIfMissing) {
+          if (body.createSessionIfMissing ?? true) {
             const session = await sessionManager.createSession({
-              title: `工作流: ${body.data.name}`,
+              title: `工作流: ${body.name}`,
               modelId: resolveDefaultModel(config),
               userId: request.user?.userId,
             });
             sessionId = session.id;
           } else {
-            reply.status(404).send({ error: 'Session not found' });
+            sendNotFoundError(request, reply, 'Session not found', { sessionId });
             return;
           }
         }
       }
 
-      const result = await chatService.executeWorkflow(body.data.name, body.data.params, sessionId);
+      const result = await chatService.executeWorkflow(body.name, body.params ?? {}, sessionId);
       return {
         sessionId,
         ...result,
       };
     } catch (error) {
-      reply.status(400).send({
-        error: error instanceof Error ? error.message : 'Workflow execution failed',
-      });
+      sendInvalidRequestError(request, reply, error, 'Workflow execution failed');
     }
   });
 
@@ -526,25 +689,31 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Update system configuration
   fastify.put('/api/config/system', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const { port, host } = request.body as { port?: number; host?: string };
+    const payload = parseRequestInput(UpdateSystemSchema, request.body, request, reply, 'Invalid request');
+    if (!payload) {
+      return;
+    }
     
     try {
-      await configManager.updateSystem({ port, host });
+      await configManager.updateSystem(payload);
       return { success: true, message: 'System configuration updated. Restart required for changes to take effect.' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Update failed' });
+      sendInvalidRequestError(request, reply, error, 'Update failed');
     }
   });
 
   // Update auth configuration
   fastify.put('/api/config/auth', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const auth = request.body as { type?: 'token' | 'oauth' | 'none'; token?: string };
+    const auth = parseRequestInput(UpdateAuthSchema, request.body, request, reply, 'Invalid request');
+    if (!auth) {
+      return;
+    }
     
     try {
       await configManager.updateAuth(auth);
       return { success: true, message: 'Auth configuration updated' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Update failed' });
+      sendInvalidRequestError(request, reply, error, 'Update failed');
     }
   });
 
@@ -552,7 +721,10 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Add model
   fastify.post('/api/config/models', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const model = request.body as { id: string; name: string; provider: string; apiKey?: string; baseUrl?: string; enabled?: boolean };
+    const model = parseRequestInput(AddModelSchema, request.body, request, reply, 'Invalid request');
+    if (!model) {
+      return;
+    }
     
     try {
       await configManager.addModel({
@@ -561,48 +733,56 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
       });
       return { success: true, message: 'Model added' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to add model' });
+      sendInvalidRequestError(request, reply, error, 'Failed to add model');
     }
   });
 
   // Update model
   fastify.put('/api/config/models/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const updates = request.body as Partial<{ name: string; apiKey: string; baseUrl: string; enabled: boolean }>;
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid model id');
+    if (!params) {
+      return;
+    }
+    const updates = parseRequestInput(UpdateModelSchema, request.body, request, reply, 'Invalid request');
+    if (!updates) {
+      return;
+    }
     
     try {
-      await configManager.updateModel(id, updates);
+      await configManager.updateModel(params.id, updates);
       return { success: true, message: 'Model updated' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to update model' });
+      sendInvalidRequestError(request, reply, error, 'Failed to update model');
     }
   });
 
   // Set default model
   fastify.put('/api/config/models/default', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const body = SetDefaultModelSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const body = parseRequestInput(SetDefaultModelSchema, request.body, request, reply, 'Invalid request');
+    if (!body) {
       return;
     }
 
     try {
-      await configManager.setDefaultModel(body.data.modelId);
+      await configManager.setDefaultModel(body.modelId);
       return { success: true, message: 'Default model updated' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to set default model' });
+      sendInvalidRequestError(request, reply, error, 'Failed to set default model');
     }
   });
 
   // Remove model
   fastify.delete('/api/config/models/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid model id');
+    if (!params) {
+      return;
+    }
     
     try {
-      await configManager.removeModel(id);
+      await configManager.removeModel(params.id);
       return { success: true, message: 'Model removed' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to remove model' });
+      sendInvalidRequestError(request, reply, error, 'Failed to remove model');
     }
   });
 
@@ -610,13 +790,10 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
 
   // Add channel
   fastify.post('/api/config/channels', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const body = CreateChannelSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const channel = parseRequestInput(CreateChannelSchema, request.body, request, reply, 'Invalid request');
+    if (!channel) {
       return;
     }
-
-    const channel = body.data;
 
     try {
       await configManager.addChannel({
@@ -628,38 +805,41 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
       });
       return { success: true, message: 'Channel added' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to add channel' });
+      sendInvalidRequestError(request, reply, error, 'Failed to add channel');
     }
   });
 
   // Update channel
   fastify.put('/api/config/channels/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const body = UpdateChannelSchema.safeParse(request.body);
-    if (!body.success) {
-      reply.status(400).send({ error: 'Invalid request', details: body.error });
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid channel id');
+    if (!params) {
+      return;
+    }
+    const updates = parseRequestInput(UpdateChannelSchema, request.body, request, reply, 'Invalid request');
+    if (!updates) {
       return;
     }
 
-    const updates = body.data;
-
     try {
-      await configManager.updateChannel(id, updates);
+      await configManager.updateChannel(params.id, updates);
       return { success: true, message: 'Channel updated' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to update channel' });
+      sendInvalidRequestError(request, reply, error, 'Failed to update channel');
     }
   });
 
   // Remove channel
   fastify.delete('/api/config/channels/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid channel id');
+    if (!params) {
+      return;
+    }
     
     try {
-      await configManager.removeChannel(id);
+      await configManager.removeChannel(params.id);
       return { success: true, message: 'Channel removed' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to remove channel' });
+      sendInvalidRequestError(request, reply, error, 'Failed to remove channel');
     }
   });
 
@@ -672,59 +852,103 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   fastify.get('/api/queue/metrics/:queueName', { preHandler: [authMiddleware, requireScopes([Scope.QueueRead])] }, async (request, reply) => {
-    const { queueName } = request.params as { queueName: string };
+    const params = parseRequestInput(
+      QueueNameParamSchema,
+      request.params,
+      request,
+      reply,
+      'Invalid queue name'
+    );
+    if (!params) {
+      return;
+    }
     const { getQueueService } = await import('../queue/index.js');
     const queueService = getQueueService();
+    const queueName: QueueName = params.queueName;
     
     try {
-      const metrics = await queueService.getMetrics(queueName as import('../queue/types.js').QueueName);
+      const metrics = await queueService.getMetrics(queueName);
       return { metrics };
-    } catch {
-      reply.status(404).send({ error: 'Queue not found' });
+    } catch (error) {
+      sendHttpError(request, reply, error, {
+        code: StandardErrorCode.QueueNotFound,
+        message: 'Queue not found',
+        statusCode: 404,
+      });
     }
   });
 
   fastify.post('/api/queue/:queueName/pause', { preHandler: [authMiddleware, requireScopes([Scope.QueueWrite])] }, async (request, reply) => {
-    const { queueName } = request.params as { queueName: string };
+    const params = parseRequestInput(
+      QueueNameParamSchema,
+      request.params,
+      request,
+      reply,
+      'Invalid queue name'
+    );
+    if (!params) {
+      return;
+    }
     const { getQueueService } = await import('../queue/index.js');
     const queueService = getQueueService();
+    const queueName: QueueName = params.queueName;
     
     try {
-      await queueService.pauseQueue(queueName as import('../queue/types.js').QueueName);
+      await queueService.pauseQueue(queueName);
       return { success: true, message: 'Queue paused' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to pause queue' });
+      sendInvalidRequestError(request, reply, error, 'Failed to pause queue');
     }
   });
 
   fastify.post('/api/queue/:queueName/resume', { preHandler: [authMiddleware, requireScopes([Scope.QueueWrite])] }, async (request, reply) => {
-    const { queueName } = request.params as { queueName: string };
+    const params = parseRequestInput(
+      QueueNameParamSchema,
+      request.params,
+      request,
+      reply,
+      'Invalid queue name'
+    );
+    if (!params) {
+      return;
+    }
     const { getQueueService } = await import('../queue/index.js');
     const queueService = getQueueService();
+    const queueName: QueueName = params.queueName;
     
     try {
-      await queueService.resumeQueue(queueName as import('../queue/types.js').QueueName);
+      await queueService.resumeQueue(queueName);
       return { success: true, message: 'Queue resumed' };
     } catch (error) {
-      reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to resume queue' });
+      sendInvalidRequestError(request, reply, error, 'Failed to resume queue');
     }
   });
 
   // Channel Webhooks - Dynamic webhook endpoints
   fastify.post('/api/webhooks/:adapterId', async (request, reply) => {
-    const { adapterId } = request.params as { adapterId: string };
+    const params = parseRequestInput(
+      AdapterIdParamSchema,
+      request.params,
+      request,
+      reply,
+      'Invalid adapter id'
+    );
+    if (!params) {
+      return;
+    }
+    const { adapterId } = params;
     const signature = request.headers['x-webhook-signature'] as string | undefined;
     
     const registry = getChannelRegistry();
     const adapter = registry.get(adapterId);
     
     if (!adapter) {
-      reply.status(404).send({ error: 'Webhook adapter not found' });
+      sendNotFoundError(request, reply, 'Webhook adapter not found', { adapterId });
       return;
     }
 
     if (!isWebhookCapableAdapter(adapter)) {
-      reply.status(400).send({ error: 'Invalid adapter type' });
+      sendBadRequestError(request, reply, 'Invalid adapter type', { adapterId });
       return;
     }
 
@@ -747,10 +971,12 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
         received: true,
       });
     } catch (error) {
-      logger.error({ err: error, adapterId }, 'Webhook processing error');
-      reply.status(400).send({ 
-        error: 'Webhook processing failed',
-        message: error instanceof Error ? error.message : 'Unknown error'
+      sendHttpError(request, reply, error, {
+        code: StandardErrorCode.UpstreamError,
+        message: 'Webhook processing failed',
+        statusCode: 400,
+        preserveMessage: true,
+        details: { adapterId },
       });
     }
   });

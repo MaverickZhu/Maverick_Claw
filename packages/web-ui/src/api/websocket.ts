@@ -6,6 +6,11 @@ export interface WSMessage {
   event?: string;
   payload?: unknown;
   error?: string;
+  errorDetail?: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
   ok?: boolean;
   // Additional fields for different message types
   params?: unknown;

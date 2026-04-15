@@ -99,6 +99,35 @@ export class MessageManager {
     return row.count;
   }
 
+  async getMessageCounts(sessionIds: string[]): Promise<Record<string, number>> {
+    if (sessionIds.length === 0) {
+      return {};
+    }
+
+    const uniqueSessionIds = Array.from(new Set(sessionIds));
+    const placeholders = uniqueSessionIds.map(() => '?').join(', ');
+    const stmt = this.db.prepare(`
+      SELECT session_id, COUNT(*) as count
+      FROM messages
+      WHERE session_id IN (${placeholders})
+      GROUP BY session_id
+    `);
+    const rows = stmt.all(...uniqueSessionIds) as Array<{
+      session_id: string;
+      count: number;
+    }>;
+
+    const counts: Record<string, number> = {};
+    for (const sessionId of uniqueSessionIds) {
+      counts[sessionId] = 0;
+    }
+    for (const row of rows) {
+      counts[row.session_id] = row.count;
+    }
+
+    return counts;
+  }
+
   private rowToMessage(row: MessageRow): Message {
     return {
       id: row.id,

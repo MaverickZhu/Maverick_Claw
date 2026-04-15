@@ -7,6 +7,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { z } from 'zod';
+import type {
+  ChatChunkEventPayload,
+  ChatCompleteEventPayload,
+  ChatErrorEventPayload,
+} from '@maverick-claw/shared';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -71,12 +77,86 @@ interface ModelsResponse {
   defaultModel?: string;
 }
 
-interface SessionListResponsePayload {
-  sessions?: RemoteSessionSnapshot[];
+const ModelInfoSchema: z.ZodType<ModelInfo> = z.object({
+  id: z.string(),
+  name: z.string(),
+  provider: z.string(),
+  enabled: z.boolean(),
+});
+
+const ModelsResponseSchema: z.ZodType<ModelsResponse> = z.object({
+  models: z.array(ModelInfoSchema).optional(),
+  defaultModel: z.string().optional(),
+});
+
+const RemoteSessionSnapshotSchema: z.ZodType<RemoteSessionSnapshot> = z.object({
+  id: z.string(),
+  title: z.string(),
+  modelId: z.string().optional(),
+  createdAt: z.union([z.string(), z.date()]),
+  updatedAt: z.union([z.string(), z.date()]),
+});
+
+const RemoteMessageSnapshotSchema: z.ZodType<RemoteMessageSnapshot> = z.object({
+  id: z.string(),
+  role: z.enum(['user', 'assistant', 'system', 'tool']),
+  content: z.string(),
+  createdAt: z.union([z.string(), z.date()]),
+});
+
+const SessionListResponsePayloadSchema = z.object({
+  sessions: z.array(RemoteSessionSnapshotSchema).default([]),
+});
+
+const SessionMessagesResponsePayloadSchema = z.object({
+  messages: z.array(RemoteMessageSnapshotSchema).default([]),
+});
+
+const ChatChunkEventPayloadSchema: z.ZodType<ChatChunkEventPayload> = z.object({
+  content: z.string(),
+  done: z.boolean(),
+  sessionId: z.string().optional(),
+});
+
+const ChatErrorEventPayloadSchema: z.ZodType<ChatErrorEventPayload> = z.object({
+  error: z.string(),
+  errorCode: z.string().optional(),
+  sessionId: z.string().optional(),
+});
+
+const ChatCompleteEventPayloadSchema: z.ZodType<ChatCompleteEventPayload> = z.object({
+  done: z.boolean(),
+  sessionId: z.string().optional(),
+});
+
+function parseModelsResponse(payload: unknown): ModelsResponse | null {
+  const parsed = ModelsResponseSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
 }
 
-interface SessionMessagesResponsePayload {
-  messages?: RemoteMessageSnapshot[];
+function parseSessionListPayload(payload: unknown): RemoteSessionSnapshot[] {
+  const parsed = SessionListResponsePayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data.sessions : [];
+}
+
+function parseSessionMessagesPayload(payload: unknown): RemoteMessageSnapshot[] {
+  const parsed = SessionMessagesResponsePayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data.messages : [];
+}
+
+function parseChatChunkPayload(payload: unknown): ChatChunkEventPayload | null {
+  const parsed = ChatChunkEventPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseChatErrorPayload(payload: unknown): ChatErrorEventPayload | null {
+  const parsed = ChatErrorEventPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseChatCompletePayload(payload: unknown): ChatCompleteEventPayload | null {
+  const parsed = ChatCompleteEventPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
 }
 
 function ChatPage() {
@@ -112,7 +192,11 @@ function ChatPage() {
       try {
         const response = await fetch('/api/models');
         if (response.ok) {
-          const data = (await response.json()) as ModelsResponse;
+          const parsed = parseModelsResponse(await response.json());
+          if (!parsed) {
+            return;
+          }
+          const data = parsed;
           const models = data.models || [];
           const enabledModels = models.filter((m) => m.enabled);
           setAvailableModels(enabledModels);
@@ -146,8 +230,8 @@ function ChatPage() {
           return;
         }
 
-        const payload = (await response.json()) as SessionMessagesResponsePayload;
-        replaceSessionMessages(sessionId, payload.messages || []);
+        const messages = parseSessionMessagesPayload(await response.json());
+        replaceSessionMessages(sessionId, messages);
       } catch (error) {
         console.error('Failed to load session messages:', error);
       }
@@ -163,8 +247,8 @@ function ChatPage() {
         return;
       }
 
-      const payload = (response.payload ?? {}) as SessionListResponsePayload;
-      syncSessionsFromServer(payload.sessions || []);
+      const sessionsPayload = parseSessionListPayload(response.payload);
+      syncSessionsFromServer(sessionsPayload);
       const activeSessionId = useChatStore.getState().currentSessionId;
       if (activeSessionId) {
         await loadSessionMessages(activeSessionId);
@@ -220,7 +304,10 @@ function ChatPage() {
 
     // Listen for chat events
     const unsubscribeChunk = client.onEvent('chat.chunk', (msg: WSMessage) => {
-      const payload = msg.payload as { content: string; done: boolean; sessionId?: string };
+      const payload = parseChatChunkPayload(msg.payload);
+      if (!payload) {
+        return;
+      }
       const sessionId = payload.sessionId || currentSessionIdRef.current;
       if (sessionId) {
         const streamingMessageId = streamingMessageIdsRef.current[sessionId];
@@ -252,7 +339,10 @@ function ChatPage() {
     });
 
     const unsubscribeError = client.onEvent('chat.error', (msg: WSMessage) => {
-      const payload = msg.payload as { error: string; sessionId?: string };
+      const payload = parseChatErrorPayload(msg.payload);
+      if (!payload) {
+        return;
+      }
       const sessionId = payload.sessionId || currentSessionIdRef.current;
       if (sessionId) {
         addMessage(sessionId, {
@@ -269,7 +359,10 @@ function ChatPage() {
     });
 
     const unsubscribeComplete = client.onEvent('chat.complete', (msg: WSMessage) => {
-      const payload = msg.payload as { sessionId?: string };
+      const payload = parseChatCompletePayload(msg.payload);
+      if (!payload) {
+        return;
+      }
       const sessionId = payload.sessionId || currentSessionIdRef.current;
       setStreaming(false);
       if (sessionId) {

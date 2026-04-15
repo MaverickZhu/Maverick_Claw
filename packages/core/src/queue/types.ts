@@ -49,6 +49,8 @@ export interface JobResult {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;
+  errorDetails?: unknown;
   processingTime?: number;
 }
 

@@ -121,6 +121,148 @@ describe('E2E Tests', () => {
     expect((response as { payload?: { session?: { id?: string } } }).payload?.session?.id).toBeDefined();
   });
 
+  it('should return structured error detail for unknown ws method', async () => {
+    const responsePromise = new Promise<{
+      type: string;
+      ok: boolean;
+      error?: string;
+      errorDetail?: { code?: string };
+    }>((resolve) => {
+      ws.once('message', (data) => {
+        resolve(JSON.parse(data.toString()));
+      });
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'req-unknown',
+        method: 'unknown.method',
+        params: {},
+      })
+    );
+
+    const response = await responsePromise;
+    expect(response.type).toBe('res');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Unknown method');
+    expect(response.errorDetail?.code).toBe('method_not_found');
+  });
+
+  it('should return validation_failed for invalid sessions.create params', async () => {
+    const responsePromise = new Promise<{
+      type: string;
+      ok: boolean;
+      errorDetail?: { code?: string };
+    }>((resolve) => {
+      ws.once('message', (data) => {
+        resolve(JSON.parse(data.toString()));
+      });
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'req-invalid-create',
+        method: 'sessions.create',
+        params: { title: 123 },
+      })
+    );
+
+    const response = await responsePromise;
+    expect(response.type).toBe('res');
+    expect(response.ok).toBe(false);
+    expect(response.errorDetail?.code).toBe('validation_failed');
+  });
+
+  it('should return not_found for missing session on sessions.get', async () => {
+    const responsePromise = new Promise<{
+      type: string;
+      ok: boolean;
+      error?: string;
+      errorDetail?: { code?: string };
+    }>((resolve) => {
+      ws.once('message', (data) => {
+        resolve(JSON.parse(data.toString()));
+      });
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'req-missing-session',
+        method: 'sessions.get',
+        params: { sessionId: 'missing-session' },
+      })
+    );
+
+    const response = await responsePromise;
+    expect(response.type).toBe('res');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Session not found');
+    expect(response.errorDetail?.code).toBe('not_found');
+  });
+
+  it('should return invalid_request for invalid modelId in sessions.create', async () => {
+    const responsePromise = new Promise<{
+      type: string;
+      ok: boolean;
+      error?: string;
+      errorDetail?: { code?: string };
+    }>((resolve) => {
+      ws.once('message', (data) => {
+        resolve(JSON.parse(data.toString()));
+      });
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'req-invalid-model',
+        method: 'sessions.create',
+        params: { title: 'with-invalid-model', modelId: 'demo:invalid' },
+      })
+    );
+
+    const response = await responsePromise;
+    expect(response.type).toBe('res');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Invalid modelId');
+    expect(response.errorDetail?.code).toBe('invalid_request');
+  });
+
+  it('should return unauthorized for chat.stream when token auth is enabled', async () => {
+    await configManager.updateAuth({ token: 'e2e-token' });
+
+    const responsePromise = new Promise<{
+      type: string;
+      ok: boolean;
+      error?: string;
+      errorDetail?: { code?: string };
+    }>((resolve) => {
+      ws.once('message', (data) => {
+        resolve(JSON.parse(data.toString()));
+      });
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'req-unauthorized-stream',
+        method: 'chat.stream',
+        params: { sessionId: 'session-for-auth-check', content: 'hello' },
+      })
+    );
+
+    const response = await responsePromise;
+    expect(response.type).toBe('res');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Authentication required');
+    expect(response.errorDetail?.code).toBe('unauthorized');
+
+    await configManager.updateAuth({ token: '' });
+  });
+
   it('should handle health check', async () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`);
     const data = await response.json();

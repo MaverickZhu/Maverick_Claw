@@ -58,3 +58,47 @@ jobs:
 
       - name: Test web-ui
         run: pnpm --filter @maverick-claw/web-ui run test -- --passWithNoTests
+
+      - name: Start core gateway for benchmark
+        run: |
+          pnpm --filter @maverick-claw/core start > /tmp/mc-core.log 2>&1 &
+          echo $! > /tmp/mc-core.pid
+
+      - name: Wait for gateway health
+        run: |
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:31987/api/health > /dev/null; then
+              echo "Gateway is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Gateway failed to become ready"
+          cat /tmp/mc-core.log || true
+          exit 1
+
+      - name: Run benchmark scenarios
+        run: |
+          pnpm --filter @maverick-claw/core benchmark -- --output-dir ../../benchmark-results --http-total 200 --http-concurrency 20 --ws-connect-total 80 --ws-connect-concurrency 8 --ws-request-total 60 --ws-request-concurrency 6
+
+      - name: Compare benchmark with baseline
+        run: |
+          pnpm --filter @maverick-claw/core benchmark:compare -- --output-dir ../../benchmark-results --baseline ../../benchmark-baselines/core-baseline.json --min-success-rate 99 --max-failures 1 --max-p95-regression 150 --max-avg-regression 150 --max-throughput-drop 80
+
+      - name: Stop core gateway
+        if: always()
+        run: |
+          if [ -f /tmp/mc-core.pid ]; then
+            kill "$(cat /tmp/mc-core.pid)" || true
+          fi
+          pkill -f "dist/cli.js" || true
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports
+          path: |
+            benchmark-results/**
+            /tmp/mc-core.log
+          if-no-files-found: warn

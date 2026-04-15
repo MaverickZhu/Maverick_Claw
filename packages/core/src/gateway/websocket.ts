@@ -1,7 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import WebSocket from 'ws';
 import { z } from 'zod';
-import type { ConnectRequest, GatewayRequest, GatewayResponse } from '@maverick-claw/shared';
+import type {
+  ChatChunkEventPayload,
+  ChatCompleteEventPayload,
+  ChatErrorEventPayload,
+  ConnectRequest,
+  GatewayRequest,
+  GatewayResponse,
+} from '@maverick-claw/shared';
 import type { GatewayOptions } from './server.js';
 import { logger } from '../utils/logger.js';
 import { setLogContext, withLogContext } from '../utils/log-context.js';
@@ -16,6 +23,17 @@ import {
   recordWsMessage,
 } from '../monitoring/metrics.js';
 import { reportError } from '../monitoring/error-tracking.js';
+import {
+  StandardErrorCode,
+  createBadRequestError,
+  createForbiddenError,
+  createMethodNotFoundError,
+  createNotFoundError,
+  createUnauthorizedError,
+  createValidationError,
+  ensureStandardError,
+  toGatewayErrorDetail,
+} from '../errors/index.js';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -106,6 +124,7 @@ interface WsErrorPayload {
   code: string;
   message: string;
   requestId?: string;
+  details?: unknown;
 }
 
 interface ModelSelectionConfig {
@@ -115,6 +134,140 @@ interface ModelSelectionConfig {
     enabled: boolean;
   }>;
   defaultModel?: string;
+}
+
+function createWsFailureResponse(
+  requestId: string,
+  error: unknown,
+  fallback: {
+    code: (typeof StandardErrorCode)[keyof typeof StandardErrorCode];
+    message: string;
+    statusCode: number;
+    details?: unknown;
+    preserveMessage?: boolean;
+  }
+): GatewayResponse {
+  const standardError = ensureStandardError(error, fallback);
+  return {
+    type: 'res',
+    id: requestId,
+    ok: false,
+    error: standardError.message,
+    errorDetail: toGatewayErrorDetail(standardError),
+  };
+}
+
+function parseWsRequestInput<TSchema extends z.ZodTypeAny>(
+  requestId: string,
+  schema: TSchema,
+  input: unknown
+): { success: true; data: z.output<TSchema> } | { success: false; response: GatewayResponse } {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      success: false,
+      response: createWsValidationFailureResponse(requestId, parsed.error.issues),
+    };
+  }
+
+  return {
+    success: true,
+    data: parsed.data,
+  };
+}
+
+function createWsValidationFailureResponse(
+  requestId: string,
+  issues: z.ZodIssue[],
+  message = 'Invalid request'
+): GatewayResponse {
+  return createWsFailureResponse(
+    requestId,
+    createValidationError(
+      issues.map((issue) => issue.message).join('; '),
+      issues
+    ),
+    {
+      code: StandardErrorCode.ValidationFailed,
+      message,
+      statusCode: 400,
+    }
+  );
+}
+
+function createWsBadRequestFailureResponse(
+  requestId: string,
+  message: string,
+  details?: unknown
+): GatewayResponse {
+  return createWsFailureResponse(requestId, createBadRequestError(message, details), {
+    code: StandardErrorCode.InvalidRequest,
+    message,
+    statusCode: 400,
+  });
+}
+
+function createWsNotFoundFailureResponse(
+  requestId: string,
+  message: string,
+  details?: unknown
+): GatewayResponse {
+  return createWsFailureResponse(requestId, createNotFoundError(message, details), {
+    code: StandardErrorCode.NotFound,
+    message,
+    statusCode: 404,
+  });
+}
+
+function createWsUnauthorizedFailureResponse(
+  requestId: string,
+  message: string,
+  details?: unknown
+): GatewayResponse {
+  return createWsFailureResponse(requestId, createUnauthorizedError(message), {
+    code: StandardErrorCode.Unauthorized,
+    message,
+    statusCode: 401,
+    details,
+  });
+}
+
+function createWsForbiddenFailureResponse(
+  requestId: string,
+  message: string,
+  details?: unknown
+): GatewayResponse {
+  return createWsFailureResponse(requestId, createForbiddenError(message), {
+    code: StandardErrorCode.Forbidden,
+    message,
+    statusCode: 403,
+    details,
+  });
+}
+
+function createWsMethodNotFoundFailureResponse(
+  requestId: string,
+  method: string
+): GatewayResponse {
+  return createWsFailureResponse(requestId, createMethodNotFoundError(method), {
+    code: StandardErrorCode.MethodNotFound,
+    message: 'Unknown method',
+    statusCode: 404,
+  });
+}
+
+function createWsInternalFailureResponse(
+  requestId: string,
+  error: unknown,
+  details?: unknown
+): GatewayResponse {
+  return createWsFailureResponse(requestId, error, {
+    code: StandardErrorCode.InternalError,
+    message: 'Unknown error',
+    statusCode: 500,
+    preserveMessage: false,
+    details,
+  });
 }
 
 function toModelRef(model: { provider: string; id: string }): string {
@@ -262,6 +415,7 @@ export async function setupWebSocketRoutes(
               sendWsError(socket, {
                 code: 'message_too_large',
                 message: `Message exceeds ${MAX_WS_MESSAGE_BYTES} bytes`,
+                details: { maxBytes: MAX_WS_MESSAGE_BYTES, actualBytes: rawDataSize },
               });
               return;
             }
@@ -282,6 +436,7 @@ export async function setupWebSocketRoutes(
               sendWsError(socket, {
                 code: 'invalid_message',
                 message: parsed.error.issues.map((issue) => issue.message).join('; '),
+                details: parsed.error.issues,
               });
               return;
             }
@@ -343,6 +498,7 @@ export async function setupWebSocketRoutes(
                 code: 'not_connected',
                 message: 'Handshake required before sending requests',
                 requestId: parsed.data.id,
+                details: { expectedType: 'connect' },
               });
               return;
             }
@@ -371,6 +527,7 @@ export async function setupWebSocketRoutes(
             sendWsError(socket, {
               code: 'internal_error',
               message: error instanceof Error ? error.message : 'Unknown WebSocket error',
+              details: { clientId },
             });
           }
         }
@@ -465,6 +622,11 @@ function handleConnect(
         id: string;
         ok: false;
         error: string;
+        errorDetail?: {
+          code: string;
+          message: string;
+          details?: unknown;
+        };
       };
     } {
   const authConfig = options.configManager.get().auth;
@@ -480,13 +642,15 @@ function handleConnect(
   } else if (connectMsg.params.token) {
     const payload = tokenManager.validateToken(connectMsg.params.token);
     if (!payload) {
+      const authError = createUnauthorizedError('Invalid or expired token');
       return {
         ok: false,
         response: {
           type: 'connect',
           id: connectMsg.id,
           ok: false,
-          error: 'Invalid or expired token',
+          error: authError.message,
+          errorDetail: toGatewayErrorDetail(authError),
         },
       };
     }
@@ -495,13 +659,15 @@ function handleConnect(
     sessionToken = connectMsg.params.token;
     scopes = payload.scopes;
   } else if (authConfig.token) {
+    const authError = createUnauthorizedError('Authentication token required');
     return {
       ok: false,
       response: {
         type: 'connect',
         id: connectMsg.id,
         ok: false,
-        error: 'Authentication token required',
+        error: authError.message,
+        errorDetail: toGatewayErrorDetail(authError),
       },
     };
   } else {
@@ -564,12 +730,11 @@ async function handleRequest(
   const requiredScopes = WS_METHOD_SCOPES[method];
 
   if (requiredScopes && !hasAllScopes(client.scopes, requiredScopes)) {
-    return {
-      type: 'res',
+    return createWsForbiddenFailureResponse(
       id,
-      ok: false,
-      error: `Insufficient scope for method ${method}. Required: ${requiredScopes.join(', ')}`,
-    };
+      `Insufficient scope for method ${method}. Required: ${requiredScopes.join(', ')}`,
+      { method, requiredScopes }
+    );
   }
 
   try {
@@ -589,29 +754,19 @@ async function handleRequest(
         };
 
       case 'sessions.create': {
-        const payload = CreateSessionRequestSchema.safeParse(params ?? {});
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, CreateSessionRequestSchema, params ?? {});
+        if (!parsed.success) {
+          return parsed.response;
         }
 
         const config = options.configManager.get();
-        if (payload.data.modelId && !hasEnabledModel(config, payload.data.modelId)) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: 'Invalid modelId',
-          };
+        if (parsed.data.modelId && !hasEnabledModel(config, parsed.data.modelId)) {
+          return createWsBadRequestFailureResponse(id, 'Invalid modelId');
         }
 
         const session = await options.sessionManager.createSession({
-          title: payload.data.title,
-          modelId: payload.data.modelId ?? resolveDefaultModel(config),
+          title: parsed.data.title,
+          modelId: parsed.data.modelId ?? resolveDefaultModel(config),
           userId: client.userId,
         });
 
@@ -624,25 +779,15 @@ async function handleRequest(
       }
 
       case 'sessions.get': {
-        const payload = SessionIdentitySchema.safeParse(params ?? {});
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, SessionIdentitySchema, params ?? {});
+        if (!parsed.success) {
+          return parsed.response;
         }
 
-        const sessionId = payload.data.sessionId ?? payload.data.id!;
-        const session = await options.sessionManager.getSession(sessionId);
+        const sessionId = parsed.data.sessionId ?? parsed.data.id!;
+        const session = await options.sessionManager.getSessionWithMessageCount(sessionId);
         if (!session) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: 'Session not found',
-          };
+          return createWsNotFoundFailureResponse(id, 'Session not found', { sessionId });
         }
 
         return {
@@ -650,26 +795,18 @@ async function handleRequest(
           id,
           ok: true,
           payload: {
-            session: {
-              ...session,
-              messageCount: await options.messageManager.getMessageCount(session.id),
-            },
+            session,
           },
         };
       }
 
       case 'sessions.delete': {
-        const payload = SessionIdentitySchema.safeParse(params ?? {});
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, SessionIdentitySchema, params ?? {});
+        if (!parsed.success) {
+          return parsed.response;
         }
 
-        const sessionId = payload.data.sessionId ?? payload.data.id!;
+        const sessionId = parsed.data.sessionId ?? parsed.data.id!;
         await options.sessionManager.deleteSession(sessionId);
         if (client.watchedSessionId === sessionId) {
           unwatchSession(client);
@@ -684,53 +821,38 @@ async function handleRequest(
       }
 
       case 'sessions.list': {
-        const sessions = await options.sessionManager.listSessions({
+        const sessions = await options.sessionManager.listSessionsWithMessageCount({
           userId: client.userId && client.userId !== 'anonymous' ? client.userId : undefined,
           limit: 100,
         });
 
-        const sessionsWithCount = await Promise.all(
-          sessions.map(async (session) => ({
-            ...session,
-            messageCount: await options.messageManager.getMessageCount(session.id),
-          }))
-        );
-
         return {
           type: 'res',
           id,
           ok: true,
-          payload: { sessions: sessionsWithCount },
+          payload: { sessions },
         };
       }
 
       case 'sessions.watch': {
-        const payload = WatchSessionRequestSchema.safeParse(params);
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, WatchSessionRequestSchema, params);
+        if (!parsed.success) {
+          return parsed.response;
         }
 
-        const session = await options.sessionManager.getSession(payload.data.sessionId);
+        const session = await options.sessionManager.getSession(parsed.data.sessionId);
         if (!session) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: 'Session not found',
-          };
+          return createWsNotFoundFailureResponse(id, 'Session not found', {
+            sessionId: parsed.data.sessionId,
+          });
         }
 
-        watchSession(client, payload.data.sessionId);
+        watchSession(client, parsed.data.sessionId);
         return {
           type: 'res',
           id,
           ok: true,
-          payload: { sessionId: payload.data.sessionId },
+          payload: { sessionId: parsed.data.sessionId },
         };
       }
 
@@ -797,39 +919,24 @@ async function handleRequest(
         };
 
       case 'chat.stream': {
-        const payload = ChatStreamRequestSchema.safeParse(params);
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, ChatStreamRequestSchema, params);
+        if (!parsed.success) {
+          return parsed.response;
         }
 
         const requiresAuth = options.configManager.get().auth.type === 'token' && Boolean(options.configManager.get().auth.token);
         if (requiresAuth && !client.authenticated) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: 'Authentication required',
-          };
+          return createWsUnauthorizedFailureResponse(id, 'Authentication required');
         }
 
         const config = options.configManager.get();
-        if (payload.data.modelId && !hasEnabledModel(config, payload.data.modelId)) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: 'Invalid modelId',
-          };
+        if (parsed.data.modelId && !hasEnabledModel(config, parsed.data.modelId)) {
+          return createWsBadRequestFailureResponse(id, 'Invalid modelId');
         }
 
-        watchSession(client, payload.data.sessionId);
-        void streamChatResponse(payload.data, chatService, (eventPayload) => {
-          broadcastSessionEvent(payload.data.sessionId, eventPayload);
+        watchSession(client, parsed.data.sessionId);
+        void streamChatResponse(parsed.data, chatService, (eventPayload) => {
+          broadcastSessionEvent(parsed.data.sessionId, eventPayload);
         });
         return {
           type: 'res',
@@ -848,28 +955,23 @@ async function handleRequest(
         };
 
       case 'workflow.run': {
-        const payload = RunWorkflowRequestSchema.safeParse(params);
-        if (!payload.success) {
-          return {
-            type: 'res',
-            id,
-            ok: false,
-            error: payload.error.issues.map((issue) => issue.message).join('; '),
-          };
+        const parsed = parseWsRequestInput(id, RunWorkflowRequestSchema, params);
+        if (!parsed.success) {
+          return parsed.response;
         }
 
         const config = options.configManager.get();
-        let sessionId = payload.data.sessionId;
+        let sessionId = parsed.data.sessionId;
         if (!sessionId) {
           const session = await options.sessionManager.createSession({
-            title: `工作流: ${payload.data.name}`,
+            title: `工作流: ${parsed.data.name}`,
             modelId: resolveDefaultModel(config),
             userId: client.userId,
           });
           sessionId = session.id;
         }
 
-        const result = await chatService.executeWorkflow(payload.data.name, payload.data.params, sessionId);
+        const result = await chatService.executeWorkflow(parsed.data.name, parsed.data.params, sessionId);
         return {
           type: 'res',
           id,
@@ -882,7 +984,7 @@ async function handleRequest(
       }
 
       default:
-        return { type: 'res', id, ok: false, error: `Unknown method: ${method}` };
+        return createWsMethodNotFoundFailureResponse(id, method);
     }
   } catch (error) {
     reportError(error, {
@@ -894,12 +996,7 @@ async function handleRequest(
         requestId: id,
       },
     });
-    return {
-      type: 'res',
-      id,
-      ok: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
+    return createWsInternalFailureResponse(id, error, { method });
   }
 }
 
@@ -916,37 +1013,54 @@ async function streamChatResponse(
       onChunk: () => {},
       onError: () => {},
     })) {
+      const chunkPayload: ChatChunkEventPayload = {
+        ...chunk,
+        sessionId: params.sessionId,
+      };
       emit({
         type: 'event',
         event: 'chat.chunk',
-        payload: {
-          ...chunk,
-          sessionId: params.sessionId,
-        },
+        payload: chunkPayload,
         timestamp: Date.now(),
       });
     }
 
+    const completePayload: ChatCompleteEventPayload = {
+      done: true,
+      sessionId: params.sessionId,
+    };
     emit({
       type: 'event',
       event: 'chat.complete',
-      payload: { done: true, sessionId: params.sessionId },
+      payload: completePayload,
       timestamp: Date.now(),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const standardError = ensureStandardError(error, {
+      code: StandardErrorCode.InternalError,
+      message: 'Unknown error',
+      statusCode: 500,
+      preserveMessage: true,
+      details: { sessionId: params.sessionId },
+    });
     reportError(error, {
       area: 'ws.chat_stream',
       tags: {
         session_id: params.sessionId,
+        error_code: standardError.code,
       },
     });
     logger.error({ err: error, sessionId: params.sessionId }, 'Chat stream failed');
 
+    const errorPayload: ChatErrorEventPayload = {
+      error: standardError.message,
+      errorCode: standardError.code,
+      sessionId: params.sessionId,
+    };
     emit({
       type: 'event',
       event: 'chat.error',
-      payload: { error: message, sessionId: params.sessionId },
+      payload: errorPayload,
       timestamp: Date.now(),
     });
   }

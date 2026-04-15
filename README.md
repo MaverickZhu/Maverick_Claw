@@ -20,6 +20,7 @@
 - 通道：WebChat、通用 Webhook、飞书/钉钉事件订阅（`/api/webhooks/:channelId`）。
 - 通道契约：配置校验收口 + 鉴权能力声明 + 契约查询接口（`/api/channels/contracts`）。
 - 模型契约：统一 Provider 能力矩阵（`/api/models/capabilities` + WS `models.capabilities`）。
+- 错误契约：HTTP/WS/Queue 统一错误码模型（`errorCode` / `errorDetail.code`）。
 
 ## 开发中能力
 
@@ -99,8 +100,12 @@ mc workflow run analyze_project --params '{"path":"./"}'
 
 # 性能基准与回归门禁
 pnpm benchmark
-pnpm benchmark:compare -- --output-dir ../../benchmark-results --baseline "<baseline>.json" --candidate "<candidate>.json"
+pnpm --filter @maverick-claw/core benchmark:compare -- --output-dir ../../benchmark-results --baseline ../../benchmark-baselines/core-baseline.json
 ```
+
+> 本地做回归对比时，建议使用 `pnpm --filter @maverick-claw/core start`（dist 运行模式）而不是 `dev`，可显著降低单轮波动带来的误判。
+
+`CI` 会在每次 `push/PR` 自动执行性能回归（基准运行 + 基线对比），并上传 `benchmark-results` 报告 artifact。
 
 ## 运行时架构（当前实现）
 

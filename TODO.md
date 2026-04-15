@@ -50,6 +50,7 @@
 - [x] CI/CD 配置（GitHub Actions：lint/typecheck/build/test）
 - [x] 性能基准测试（新增 `pnpm benchmark`，覆盖 HTTP + WebSocket，输出 JSON/Markdown 报告）
 - [x] 性能回归门禁（新增 `pnpm benchmark:compare`，支持 baseline 对比 + 误差预算阈值判定）
+- [x] 性能基准常规回归（CI 自动跑 benchmark + baseline 对比 + 报告归档）
 
 ---
 
@@ -86,9 +87,9 @@
 
 ### 技术债务
 
-- [/] 错误处理一致性
-- [/] 类型检查覆盖
-- [ ] 性能优化
+- [x] 错误处理一致性
+- [x] 类型检查覆盖
+- [x] 性能优化
 - [/] 重复代码重构
 
 ---
@@ -126,3 +127,14 @@
 - 2026-04-14: 根据当前代码实现校准状态
 - 2026-04-14: 完成通道插件化边界收口（配置/鉴权/路由契约）
 - 2026-04-14: 完成多模型能力矩阵收口（统一能力字段与查询接口）
+- 2026-04-15: 完成性能基准常规回归接入（基线文件 + CI 回归流程）
+- 2026-04-15: 完成错误处理一致性收口（统一错误码 + HTTP/WS/Queue 错误结构）
+- 2026-04-15: 完成类型检查覆盖收口（边界 DTO zod 校验 + WS 协议对象共享类型）
+- 2026-04-15: 完成性能优化首轮（会话列表消息计数改为聚合查询，benchmark 对比通过）
+- 2026-04-15: 推进重复代码重构（SessionManager 收口会话计数回填，HTTP/WS 共用）
+- 2026-04-15: 推进重复代码重构（HTTP 路由输入校验模板收口，统一 `parseRequestInput`）
+- 2026-04-15: 推进重复代码重构（新增 `sendInvalidRequestError`，统一 HTTP fallback 错误模板）
+- 2026-04-15: 完成 benchmark 波动隔离复测（确认门禁存在阈值敏感场景，`ws.connect` 波动可触发单轮 FAIL）
+- 2026-04-15: 推进重复代码重构（新增 `sendNotFoundError`/`sendBadRequestError`，收口会话与 webhook 重复错误模板）
+- 2026-04-15: 推进重复代码重构（WS `handleRequest` 新增错误响应 helper，收口验证与鉴权失败模板）
+- 2026-04-15: 推进重复代码重构（WS 参数校验统一 `parseWsRequestInput`，补齐 validation/not_found/invalid_request/unauthorized E2E 用例）

@@ -49,4 +49,37 @@ describe('MessageManager', () => {
     expect(messages[1].content).toBe('world');
     expect(count).toBe(2);
   });
+
+  it('should aggregate message counts for multiple sessions', async () => {
+    const sessionA = await sessionManager.createSession({ title: 'session-a' });
+    const sessionB = await sessionManager.createSession({ title: 'session-b' });
+    const sessionC = await sessionManager.createSession({ title: 'session-c' });
+
+    await messageManager.createMessage({
+      sessionId: sessionA.id,
+      role: 'user',
+      content: 'a-1',
+    });
+    await messageManager.createMessage({
+      sessionId: sessionA.id,
+      role: 'assistant',
+      content: 'a-2',
+    });
+    await messageManager.createMessage({
+      sessionId: sessionB.id,
+      role: 'user',
+      content: 'b-1',
+    });
+
+    const counts = await messageManager.getMessageCounts([
+      sessionA.id,
+      sessionB.id,
+      sessionC.id,
+      sessionA.id,
+    ]);
+
+    expect(counts[sessionA.id]).toBe(2);
+    expect(counts[sessionB.id]).toBe(1);
+    expect(counts[sessionC.id]).toBe(0);
+  });
 });

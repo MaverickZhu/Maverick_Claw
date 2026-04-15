@@ -79,6 +79,26 @@ export type {
 
 export { logger } from './utils/logger.js';
 export {
+  StandardError,
+  StandardErrorCode,
+  ensureStandardError,
+  createValidationError,
+  createBadRequestError,
+  createUnauthorizedError,
+  createForbiddenError,
+  createNotFoundError,
+  createMethodNotFoundError,
+  createQueueNotFoundError,
+  createQueueNotInitializedError,
+  toHttpErrorBody,
+  toGatewayErrorDetail,
+} from './errors/index.js';
+export type {
+  StandardErrorCodeValue,
+  StandardizedGatewayError,
+  StandardizedHttpErrorBody,
+} from './errors/index.js';
+export {
   initErrorTracking,
   reportError,
   flushErrorTracking,

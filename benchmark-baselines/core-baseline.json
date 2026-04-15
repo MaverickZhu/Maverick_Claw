@@ -1,0 +1,73 @@
+{
+  "generatedAt": "2026-04-15T01:05:09.248Z",
+  "target": {
+    "baseUrl": "http://127.0.0.1:31987",
+    "wsUrl": "ws://127.0.0.1:31987/ws"
+  },
+  "config": {
+    "timeoutMs": 10000,
+    "outputDir": "./benchmark-results",
+    "httpTotal": 200,
+    "httpConcurrency": 20,
+    "wsConnectTotal": 80,
+    "wsConnectConcurrency": 8,
+    "wsRequestTotal": 60,
+    "wsRequestConcurrency": 6
+  },
+  "scenarios": [
+    {
+      "name": "http.health",
+      "total": 200,
+      "success": 200,
+      "failed": 0,
+      "successRate": 100,
+      "durationMs": 87.78,
+      "throughputRps": 2278.33,
+      "latencyMs": {
+        "min": 2.76,
+        "max": 25.24,
+        "avg": 7.41,
+        "p50": 5.41,
+        "p95": 20.13,
+        "p99": 22.84
+      },
+      "sampleErrors": []
+    },
+    {
+      "name": "ws.connect",
+      "total": 80,
+      "success": 80,
+      "failed": 0,
+      "successRate": 100,
+      "durationMs": 53.86,
+      "throughputRps": 1485.37,
+      "latencyMs": {
+        "min": 1.55,
+        "max": 7.82,
+        "avg": 3.32,
+        "p50": 2.9,
+        "p95": 6.53,
+        "p99": 7.82
+      },
+      "sampleErrors": []
+    },
+    {
+      "name": "ws.sessions.list",
+      "total": 60,
+      "success": 60,
+      "failed": 0,
+      "successRate": 100,
+      "durationMs": 70.8,
+      "throughputRps": 847.42,
+      "latencyMs": {
+        "min": 0.76,
+        "max": 4.28,
+        "avg": 1.76,
+        "p50": 1.54,
+        "p95": 3.04,
+        "p99": 4.28
+      },
+      "sampleErrors": []
+    }
+  ]
+}

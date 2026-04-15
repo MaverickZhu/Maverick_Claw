@@ -77,6 +77,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增 `pnpm benchmark:compare`（baseline/candidate 自动对比）
   - 支持成功率、失败数、P95、平均延迟、吞吐下降等阈值判定
   - 超过误差预算时返回非零退出码，便于接入 CI 稳定性门禁
+- 性能基准常规回归
+  - 新增仓库基线文件：`benchmark-baselines/core-baseline.json`
+  - CI 在每次 push/PR 自动执行 benchmark + baseline 对比
+  - 回归报告自动归档为 GitHub Actions artifact（`benchmark-results/**`）
+- 错误处理一致性收口
+  - 新增统一错误契约：`StandardError`（`code/statusCode/details/retryable`）
+  - HTTP 错误响应统一输出：`error` + `errorCode` + `requestId` + `details`
+  - WebSocket 失败响应新增结构化字段：`errorDetail`
+  - Queue `JobResult` 新增 `errorCode/errorDetails`，队列未初始化/不存在错误统一编码
+- 类型检查覆盖收口
+  - HTTP 边界 DTO（`params/body`）统一使用 zod 校验，移除网关层弱类型断言
+  - Shared 协议对象补充 `chat.chunk/chat.complete/chat.error` 事件 payload 类型
+  - Web UI 对 REST/WS payload 增加运行时解析（zod），移除聊天页协议断言
+- 会话列表热点性能优化
+  - `MessageManager` 新增批量计数接口 `getMessageCounts(sessionIds)`
+  - HTTP `/api/sessions` 与 WS `sessions.list` 改为单次聚合查询回填 `messageCount`
+  - `ws.sessions.list` benchmark 对比中 p95 从 `9.14ms` 降至 `5.96ms`（回归门禁 PASS）
+- 会话计数视图重复代码收口
+  - `SessionManager` 新增 `getSessionWithMessageCount` 与 `listSessionsWithMessageCount`
+  - HTTP/WS 会话查询统一走 `SessionManager`，移除网关层重复计数拼装逻辑
+  - 重构后 benchmark 回归对比 PASS（`perf-pass2` vs `perf-pass3`）
+- HTTP 请求校验收口（进行中）
+  - 登录/会话创建/发消息/工作流执行/默认模型/通道配置等路由统一改为 `parseRequestInput(...)`
+  - 移除网关层多处重复 `safeParse + sendHttpError` 模板代码，保持错误结构一致
+- HTTP 错误 fallback 模板收口（进行中）
+  - 新增 `sendInvalidRequestError(...)`，统一 `InvalidRequest + status 400 + preserveMessage` 的回退策略
+  - `workflow/config/models/channels/queue` 等路由异常分支改为复用统一 helper，减少样板代码与参数分叉风险
+  - 新增 `sendNotFoundError(...)` 与 `sendBadRequestError(...)`，收口 `sessions/*` 与 `webhooks/*` 重复错误处理分支
+- WebSocket 错误模板收口（进行中）
+  - `handleRequest` 新增统一失败响应 helper：`createWsValidationFailureResponse` / `createWsNotFoundFailureResponse` / `createWsBadRequestFailureResponse` / `createWsUnauthorizedFailureResponse` / `createWsForbiddenFailureResponse`
+  - 收口 `sessions/chat/workflow` 等方法的参数校验与鉴权失败模板，降低 WS 分支复制代码
+- WebSocket 错误模板收口（二阶段，进行中）
+  - 新增 `parseWsRequestInput(...)`，统一 `safeParse` + `validation_failed` 失败返回模板
+  - 新增 `createWsMethodNotFoundFailureResponse(...)` / `createWsInternalFailureResponse(...)`，收口 unknown method 与 catch fallback 分支
+  - E2E 新增 4 条 WS 错误分支回归用例：`validation_failed` / `not_found` / `invalid_request` / `unauthorized`
+- Benchmark 波动隔离复测（稳定性观察）
+  - 隔离环境（独立 config/data + `core start`）下，`ws.sessions.list` 与 pass3 baseline 接近（p95 `4.33ms`）
+  - 同代码同阈值存在单轮 FAIL/PASS（`ws.connect` 吞吐波动可触发门禁），提示后续以稳定运行模式执行回归
 - 飞书通道首版接入
   - 新增 `LarkAdapter`（事件订阅接入、URL 验证 challenge 自动响应）
   - 支持飞书消息回传（`appId/appSecret` 或 Bot Webhook 回退）

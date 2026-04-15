@@ -1,7 +1,13 @@
-import { Queue, Worker, type Job, type QueueOptions } from 'bullmq';
+import { Queue, Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { logger } from '../utils/logger.js';
 import { reportError } from '../monitoring/error-tracking.js';
+import {
+  StandardErrorCode,
+  createQueueNotFoundError,
+  createQueueNotInitializedError,
+  ensureStandardError,
+} from '../errors/index.js';
 import type {
   QueueName,
   JobData,
@@ -97,10 +103,22 @@ export class QueueService {
           return { ...result, processingTime };
         } catch (error) {
           const processingTime = Date.now() - startTime;
-          reportError(error, {
+          const standardError = ensureStandardError(error, {
+            code: StandardErrorCode.QueueJobFailed,
+            message: 'Queue job failed',
+            statusCode: 500,
+            preserveMessage: true,
+            details: {
+              queue: queueName,
+              jobId: job.id,
+            },
+            retryable: true,
+          });
+          reportError(standardError, {
             area: 'queue.job',
             tags: {
               queue: queueName,
+              error_code: standardError.code,
             },
             extra: {
               jobId: job.id,
@@ -108,12 +126,13 @@ export class QueueService {
             },
           });
           logger.error({
-            err: error,
+            err: standardError,
             jobId: job.id,
             queue: queueName,
             processingTime,
+            errorCode: standardError.code,
           }, 'Job failed');
-          throw error;
+          throw standardError;
         }
       },
       {
@@ -156,7 +175,7 @@ export class QueueService {
   ): Promise<Job<T>> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not initialized`);
+      throw createQueueNotInitializedError(queueName);
     }
 
     const job = await queue.add(queueName, data, {
@@ -176,7 +195,7 @@ export class QueueService {
   async getMetrics(queueName: QueueName): Promise<QueueMetrics> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not found`);
+      throw createQueueNotFoundError(queueName);
     }
 
     const [waiting, active, completed, failed, delayed, paused] = await Promise.all([
@@ -204,16 +223,25 @@ export class QueueService {
    */
   async getAllMetrics(): Promise<QueueMetrics[]> {
     const promises = Array.from(this.queues.keys()).map((name) =>
-      this.getMetrics(name).catch((err) => ({
-        name,
-        waiting: 0,
-        active: 0,
-        completed: 0,
-        failed: 0,
-        delayed: 0,
-        paused: false,
-        error: err.message,
-      }))
+      this.getMetrics(name).catch((error) => {
+        const standardError = ensureStandardError(error, {
+          code: StandardErrorCode.QueueNotFound,
+          message: 'Queue not found',
+          statusCode: 404,
+          preserveMessage: true,
+          details: { queueName: name },
+        });
+        return {
+          name,
+          waiting: 0,
+          active: 0,
+          completed: 0,
+          failed: 0,
+          delayed: 0,
+          paused: false,
+          error: standardError.message,
+        };
+      })
     );
 
     return Promise.all(promises as Promise<QueueMetrics>[]);
@@ -225,7 +253,7 @@ export class QueueService {
   async pauseQueue(queueName: QueueName): Promise<void> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not found`);
+      throw createQueueNotFoundError(queueName);
     }
 
     await queue.pause();
@@ -238,7 +266,7 @@ export class QueueService {
   async resumeQueue(queueName: QueueName): Promise<void> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not found`);
+      throw createQueueNotFoundError(queueName);
     }
 
     await queue.resume();
@@ -255,7 +283,7 @@ export class QueueService {
   ): Promise<void> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not found`);
+      throw createQueueNotFoundError(queueName);
     }
 
     await queue.clean(0, count, status);
@@ -268,7 +296,7 @@ export class QueueService {
   async getJob(queueName: QueueName, jobId: string): Promise<Job | undefined> {
     const queue = this.queues.get(queueName);
     if (!queue) {
-      throw new Error(`Queue '${queueName}' not found`);
+      throw createQueueNotFoundError(queueName);
     }
 
     return queue.getJob(jobId);
