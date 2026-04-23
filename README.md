@@ -10,23 +10,29 @@
 - Web-first：浏览器聊天界面为主，CLI 为运维与调试入口。
 - 工具增强：支持工具调用、并行/依赖编排、预定义工作流模板。
 
-## 当前能力（v0.1.x）
+## 当前能力（v1.0.0）
 
 - Gateway：HTTP + WebSocket 服务、会话与消息持久化（SQLite）。
 - Web UI：聊天页、会话切换、模型选择、流式消息展示。
 - CLI：`gateway` 生命周期管理、`status`、`config`、`send`、`workflow`。
 - 工具系统：10 个内置工具，支持策略控制与执行历史。
-- 工作流：5 个预定义工作流模板，已提供 HTTP/WS/CLI 对外入口。
-- 通道：WebChat、通用 Webhook、飞书/钉钉事件订阅（`/api/webhooks/:channelId`）。
+- 工作流：5 个预定义工作流模板 + 自定义工作流 CRUD，已提供 HTTP/WS/CLI 对外入口。
+- 模型支持：DeepSeek、OpenAI、Kimi、Ollama 本地模型、文心一言、通义千问、豆包。
+- 通道：WebChat、通用 Webhook、微信（wechaty）、飞书、钉钉、企业微信、邮件（SMTP/IMAP）、Telegram、Slack、Custom。
 - 通道契约：配置校验收口 + 鉴权能力声明 + 契约查询接口（`/api/channels/contracts`）。
 - 模型契约：统一 Provider 能力矩阵（`/api/models/capabilities` + WS `models.capabilities`）。
 - 错误契约：HTTP/WS/Queue 统一错误码模型（`errorCode` / `errorDetail.code`）。
+- 文件上传：前后端完整链路（`@fastify/multipart` + 前端附件发送）。
+- 主题切换：light/dark/system 三态 + Ant Design 动态主题 + TailwindCSS dark 变体 + 本地持久化。
+- 使用统计：`usage_records` + Dashboard 统计卡片 + 每日趋势 + 模型使用分析。
+- 插件系统：插件市场（远程 registry + ZIP 安装/卸载/更新）+ PluginManager 动态加载。
+- 认证体系：本地 Token / SSO-OAuth2 / LDAP + RBAC 角色权限 + 审计日志。
 
-## 开发中能力
+## Phase 2 路线
 
-- 多客户端会话广播与实时协作体验。
-- 外部错误追踪与监控平台接入（Sentry / OTel）。
-- 更细粒度的权限模型（RBAC/Scope）。
+- 更多通道：企业微信、邮件通道
+- 更多模型：文心一言、通义千问、豆包、Ollama 本地模型
+- 高级功能：插件系统、记忆系统、使用统计、导入/导出
 
 ## 项目结构
 

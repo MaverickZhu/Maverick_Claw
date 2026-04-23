@@ -134,9 +134,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 能力矩阵包含参数支持（temperature/maxTokens/toolChoice）与可视化字段（registered/configuredModels）
   - `ChatService` 与 `ToolAgent` 改为基于能力矩阵读取默认温度，移除 provider 硬编码
 
+- P1-1 文件上传功能
+  - 后端：集成 `@fastify/multipart` + `UploadService` + `POST /api/upload` + 文件存储路径管理
+  - 前端：`Chat.tsx` 文件选择、附件标签显示、发送时携带 `attachments` payload
+  - 类型扩展：`attachments: { name, type, path }[]` 统一入参格式
+  - 6 个单元测试覆盖
+- P1-2 主题切换功能
+  - `ThemeProvider` + `useTheme` hook（light/dark/system 三态）
+  - Ant Design `ConfigProvider` 动态主题切换 + Token 定制
+  - TailwindCSS `dark:` 变体 + CSS 自定义属性统一色板
+  - Zustand `persist` middleware 本地存储持久化
+- P1-3 系统命令工具加固
+  - 白名单从 ~30 扩展至 ~60 命令（覆盖常见安全工具链）
+  - 新增 `args` 参数支持 + `--` 强制分隔符 + 危险字符过滤
+  - 路径限制（禁止向上逃逸）、输出限制（截断 + 换行）、环境变量过滤
+  - 超时控制（默认 30s）、安全模式（`forceSafeMode: true` 白名单外拒绝）
+  - 跨平台测试修复：`echo/pwd/sleep/seq` 替换为 `node -e` 脚本
+- 聊天界面全面优化
+  - 消息气泡圆角差异化（用户/AI 不对称）+ 深色模式适配
+  - 智能时间格式（今天/昨天/日期）
+  - 空状态引导组件（新会话时显示示例提示）
+  - 会话标签可关闭 + 横向滚动 + 宽度限制
+  - 输入区域附件标签优化 + 颜色指示
+  - Streaming CSS 光标动画 `chat-cursor-blink`
+  - 错误消息红色系独立背景样式
+- 微信通道集成（wechaty）
+  - 新增 `WeChatAdapter`（继承 `AbstractChannelAdapter`）
+  - 动态导入 `wechaty`（可选依赖，按需加载）
+  - 消息缓存 LRU（最近 100 条）用于回复上下文
+  - 支持群聊、`@提及`、自身消息过滤
+  - 10 个单元测试覆盖（全量 mock wechaty）
+- 通道适配器重复代码重构
+  - 提取 `AbstractChannelAdapter` 基类：统一生命周期（`initialize/start/stop/health`）+ 消息处理器注册与通知
+  - 提取 `channels/adapters/utils.ts`：`getString`/`getNumber`/`getRecord`/`getBoolean`/`readJson`
+  - 新增 `ChannelResponse` 工厂函数：`createChannelError` / `createChannelSuccess`
+  - 钉钉/飞书/Webhook/微信适配器全部迁移，消除 ~311 行重复代码
+- 企业微信通道适配器（Phase 2 Week 9-10）
+  - 新增 `WeComAdapter`（继承 `AbstractChannelAdapter`）
+  - GET URL 验证：`verifyWebhookUrl` 支持 echostr 返回 + SHA1 签名校验（明文模式）
+  - POST XML 消息解析：`processWebhook` 支持 text/image/voice/video/file + 订阅事件过滤
+  - 消息发送：通过企业微信 API（`/message/send`）+ access_token 自动获取与缓存
+  - 扩展 `WebhookCapableAdapter` 接口：新增可选 `verifyWebhookUrl` 方法
+  - 网关新增 `GET /api/webhooks/:adapterId` 路由统一处理 URL 验证
+  - 15 个单元测试覆盖（初始化/生命周期/URL 验证/XML 解析/消息发送/错误场景）
+- 邮件通道适配器（Phase 2 Week 9-10）
+  - 新增 `EmailAdapter`（继承 `AbstractChannelAdapter`）
+  - SMTP 发送：`nodemailer` + 自动 TLS 判断（端口 465 默认启用）
+  - IMAP 接收：`imapflow` 轮询 INBOX + `mailparser` 解析邮件正文/主题/发件人
+  - 配置覆盖：smtp/imap 主机/端口/认证/TLS、发件地址、轮询间隔、已读标记
+  - 邮件内容格式化为 `Subject: xxx\n\n<body>`，便于 AI 处理
+  - 9 个单元测试覆盖（初始化/SMTP 发送/IMAP 轮询/错误处理/未配置场景）
+- 国内云模型 Provider 接入（Phase 2 Week 11-12）
+  - 通义千问 `QwenProvider`：DashScope 兼容模式 (`dashscope.aliyuncs.com/compatible-mode/v1`)
+    - 模型：`qwen-turbo`, `qwen-plus`, `qwen-max`, `qwen-coder`
+    - 环境变量：`DASHSCOPE_API_KEY` / `QWEN_API_KEY`
+    - SSE 流式 + Tool 调用 + 8 个单元测试
+  - 文心一言 `ErnieProvider`：千帆 OpenAI 兼容模式 (`qianfan.baidubce.com/v2`)
+    - 模型：`ernie-4.0-turbo`, `ernie-3.5`, `ernie-speed`
+    - 环境变量：`QIANFAN_API_KEY` / `ERNIE_API_KEY`
+    - SSE 流式 + Tool 调用 + 8 个单元测试
+  - 豆包 `DoubaoProvider`：火山方舟 OpenAI 兼容模式 (`ark.cn-beijing.volces.com/api/v3`)
+    - 模型：`doubao-pro-32k`, `doubao-lite-32k`, `doubao-vision-pro-32k`
+    - 环境变量：`ARK_API_KEY` / `DOUBAO_API_KEY`
+    - SSE 流式 + Tool 调用 + Vision 支持 + 8 个单元测试
+  - 接入 Gateway/CLI 注册链路 + 能力矩阵
+- 使用统计系统（Phase 2 Week 13）
+  - 新增 `usage_records` 表（session_id, model_id, provider, prompt_tokens, completion_tokens, latency_ms）
+  - 新增 `StatsService`：记录/查询 usage，支持 overview/daily/model 维度聚合
+  - 新增 `/api/stats/overview`, `/api/stats/daily`, `/api/stats/models` HTTP 路由
+  - Prometheus 扩展：`tokens_total` counter + `request_latency_seconds` histogram
+  - `ChatService` 流式结束后自动记录 token 消耗与延迟
+  - Dashboard 从硬编码 0 改为真实数据（通过 API 获取）
+  - 4 个单元测试覆盖
+- 记忆系统持久化（Phase 2 Week 13）
+  - 新增 `channel_sessions` 表 + `ChannelSessionManager` DB 持久化（替代纯内存映射）
+  - 重启不丢会话映射，支持 24h 过期自动清理
+  - `ChatService.getConversationHistory()` 新增 `maxContextMessages=20` 截断
+  - 超长上下文保留 system 消息 + 最近 N 条，避免 token 超限
+- 导入/导出功能（Phase 2 Week 14）
+  - 新增 `ExportService`：ZIP 打包 sessions + messages + config.json5 + manifest.json
+  - 新增 `ImportService`：ZIP 解析 + 恢复 sessions/messages，UUID 冲突自动跳过
+  - 新增 `POST /api/export`, `POST /api/import` HTTP 路由
+  - 3 个单元测试覆盖
+- 插件系统 MVP（Phase 2 Week 14）
+  - 新增 `Plugin` 接口（init/start/stop + `PluginContext`）
+  - 新增 `PluginManager` 动态加载 + 生命周期管理（init/start/stop）
+  - `PluginContext` 暴露 modelRegistry/toolRegistry/channelRegistry/configManager/dbManager/logger
+  - `gateway/server.ts` 接入 `pluginManager.loadAll()` 启动时自动加载
+  - `plugins/deepseek` 包装为真正 Plugin 实现（`plugin` 导出 + 环境变量驱动注册）
+  - `packages/core/src/index.ts` 导出 `Plugin`/`PluginContext`/`PluginManifest` 类型
+- 多用户系统 + RBAC（Phase 3 Week 15）
+  - `users` 表启用：`role_id` + `status` 字段，密码哈希使用 PBKDF2-HMAC-SHA256（内置 crypto，无新增依赖）
+  - `roles` 表 + `RoleService`：内置 admin/user/guest 三角色，支持自定义角色创建
+  - `UserService`：用户 CRUD + 密码验证 + 角色分配
+  - `TokenManager` DB 化：`tokens` 表持久化，重启不丢，支持 revoke/cleanup
+  - `AuthService`：login/logout/me/changePassword 高层 API
+  - 登录 `/api/auth/login` 改造：支持 email/password 查 DB，保留 config masterPassword 向后兼容
+  - 资源所有权中间件：非 admin 只能访问自己的 session/message
+  - 新增路由：`/api/auth/logout`, `/api/auth/me`, `/api/users/*`, `/api/roles/*`, `/api/users/me/password`
+  - 新增测试 28 个（password 5 + user-service 10 + role-service 7 + token-db 6）
+- 审计日志 + 工作流持久化（Phase 3 Week 16）
+  - `audit_logs` 表 + `AuditService`：log/query/stats，异步写入不阻塞主流程
+  - 审计查询 API：`GET /api/audit/logs` + `/api/audit/stats`（admin only，时间范围/分页过滤）
+  - `workflows` 表 + `WorkflowService`：自定义工作流存储/查询/更新/删除
+  - 工作流 HTTP API：`POST /api/workflows`, `GET /api/workflows/:id`, `PUT/DELETE`, `POST /api/workflows/:id/run`
+  - 内置模板保留（`builtin:` 前缀），与自定义工作流统一列表
+  - 新增测试 13 个（audit 6 + workflow 7）
+- SSO/OAuth2 + LDAP 认证（Phase 3 Week 17）
+  - 新增依赖：`openid-client@^5.7.0` + `ldapjs@^3.0.7` + `@types/ldapjs`
+  - 数据库 Schema 扩展：`users` 表新增 `auth_provider`/`external_id`，新增 `oauth_states` 临时表
+  - Config Schema 扩展：`auth.oauth.providers[]` + `auth.ldap` 完整配置
+  - `OAuthService`：OIDC 自动发现 + OAuth2 手动配置，state CSRF 防护，用户匹配/创建/角色映射
+  - `LDAPService`：bind/search 认证，group 查询 + groupRoleMapping 角色解析
+  - `SSOService`：统一认证入口，聚合本地/OAuth/LDAP 方法列表
+  - HTTP 路由：`GET /api/auth/providers`, `GET /api/auth/oauth/:provider`, `GET /api/auth/oauth/callback`, `POST /api/auth/ldap`
+  - 新增测试 13 个（oauth-service 6 + ldap-service 4 + sso-service 3）
+- 插件市场（Phase 3 Week 18）
+  - 数据库 Schema 扩展：新增 `plugins` 表（id/name/version/source/enabled/installed_at/manifest）
+  - Config Schema 扩展：`plugins.registryUrl` 支持自定义 registry 地址
+  - `PluginManifest` 扩展：新增 `id`/`author`/`permissions`/`dependencies` 字段
+  - `PluginMarketService`：远程 registry 查询（JSON 索引）、ZIP 下载/解压、安装/卸载/更新/版本检查
+  - `PluginManager` 改造：支持 DB 驱动加载（`enabled=1` 的已安装插件），支持 unload/reload
+  - HTTP 路由：`GET /api/market/plugins`, `GET /api/market/plugins/:id`, `GET /api/plugins`, `POST /api/plugins/install`, `POST /api/plugins/uninstall`, `POST /api/plugins/update`, `GET /api/plugins/updates`, `POST /api/plugins/:id/enable`
+  - 新增测试 13 个（market-service 13）
+- 前端管理面板 + Auth 体系（Phase 3 Week 19）
+  - 新增 `dayjs` 依赖（web-ui）
+  - 登录页（`Login.tsx`）：本地邮箱密码登录 + SSO 提供商选择 + 自动跳转
+  - Auth Store（`stores/auth.ts`）：Zustand + persist，管理 token/user/scopes/isAdmin + logout
+  - API Client（`api/client.ts`）：统一封装 GET/POST/PUT/DELETE + Bearer Token
+  - 路由守卫：`AuthGuard`（认证检查）+ `AdminGuard`（admin 权限检查）
+  - Sidebar 改造：底部用户头像/名称/邮箱 + 下拉登出 + admin 专属「管理」菜单分组
+  - 用户管理页（`/admin/users`）：用户列表/新建/编辑/删除 + 角色分配 + 状态开关
+  - 角色管理页（`/admin/roles`）：角色列表/新建/编辑/删除 + 权限标签 + 内置角色保护
+  - 审计日志页（`/admin/audit`）：日志列表 + 时间范围筛选 + 统计卡片 + 操作分布标签
+- v1.0.0 正式版收尾（Phase 3 Week 20）
+  - 插件市场前端（`/plugins`）：已安装插件管理（启用/禁用/卸载/更新）+ 市场浏览/安装
+  - 工作流管理前端（`/workflows`）：列表/新建/编辑/删除/执行 + JSON 定义编辑器 + 执行结果展示 + 详情查看
+  - Dashboard 增强：接入 `/api/stats/daily`（14 天每日趋势表格）+ `/api/stats/models`（模型使用统计表格）
+  - 版本号升级：全部包 `0.1.0` → `1.0.0`（含 CLI 硬编码版本号）
+
 ### Verified
 - 依赖安装成功 (pnpm)
-- 所有包构建成功
+- 所有包构建成功 (5/5 packages)
+- 测试全量通过 (273 测试：shared 1 + web-ui 1 + cli 7 + core 264，42 个测试文件)
+- CI 接入 lint/typecheck/build/test/benchmark
 - Gateway 服务启动正常
 - HTTP API 测试通过
 - 数据库连接正常

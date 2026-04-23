@@ -2,13 +2,15 @@ import { createHmac } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   AdapterWebhookResult,
-  ChannelAdapter,
   ChannelMessage,
   ChannelResponse,
   ChannelType,
   SendMessageOptions,
   WebhookCapableAdapter,
 } from '../types.js';
+import { AbstractChannelAdapter } from './base.js';
+import { createChannelError, createChannelSuccess } from '../types.js';
+import { getString, getNumber, getRecord, readJson } from './utils.js';
 import { logger } from '../../utils/logger.js';
 
 const LARK_API_BASE_URL = 'https://open.feishu.cn/open-apis';
@@ -29,65 +31,40 @@ interface LarkAuthState {
 
 type ReceiveIdType = 'chat_id' | 'open_id';
 
-export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
-  id: string;
+export class LarkAdapter extends AbstractChannelAdapter implements WebhookCapableAdapter {
   type: ChannelType = 'lark';
-  name: string;
 
   private config: LarkAdapterConfig;
-  private messageHandlers: Array<(message: ChannelMessage) => Promise<void> | void> = [];
-  private initialized = false;
-  private started = false;
   private auth: LarkAuthState = { expiresAt: 0 };
 
   constructor(id: string, name: string, config: LarkAdapterConfig) {
-    this.id = id;
-    this.name = name;
+    super(id, name);
     this.config = { ...config };
   }
 
   async initialize(config: Record<string, unknown>): Promise<void> {
     this.config = {
       ...this.config,
-      webhookPath: this.getString(config.webhookPath) || this.config.webhookPath,
-      appId: this.getString(config.appId) || this.config.appId,
-      appSecret: this.getString(config.appSecret) || this.config.appSecret,
-      verificationToken: this.getString(config.verificationToken) || this.config.verificationToken,
-      botWebhookUrl: this.getString(config.botWebhookUrl) || this.config.botWebhookUrl,
-      botWebhookSecret: this.getString(config.botWebhookSecret) || this.config.botWebhookSecret,
+      webhookPath: getString(config.webhookPath) || this.config.webhookPath,
+      appId: getString(config.appId) || this.config.appId,
+      appSecret: getString(config.appSecret) || this.config.appSecret,
+      verificationToken: getString(config.verificationToken) || this.config.verificationToken,
+      botWebhookUrl: getString(config.botWebhookUrl) || this.config.botWebhookUrl,
+      botWebhookSecret: getString(config.botWebhookSecret) || this.config.botWebhookSecret,
     };
     this.initialized = true;
     logger.info({ adapterId: this.id }, 'Lark adapter initialized');
   }
 
   async start(): Promise<void> {
-    if (!this.initialized) {
-      throw new Error('Adapter not initialized');
-    }
-    this.started = true;
+    await super.start();
     logger.info({ adapterId: this.id }, 'Lark adapter started');
   }
 
   async stop(): Promise<void> {
-    this.started = false;
-    this.messageHandlers = [];
+    await super.stop();
     this.auth = { expiresAt: 0 };
     logger.info({ adapterId: this.id }, 'Lark adapter stopped');
-  }
-
-  async health(): Promise<boolean> {
-    return this.initialized && this.started;
-  }
-
-  onMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    this.messageHandlers.push(handler);
-  }
-
-  offMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    const index = this.messageHandlers.indexOf(handler);
-    if (index >= 0) {
-      this.messageHandlers.splice(index, 1);
-    }
   }
 
   async processWebhook(payload: unknown, _signature?: string): Promise<AdapterWebhookResult> {
@@ -96,13 +73,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       return parsed;
     }
 
-    for (const handler of this.messageHandlers) {
-      try {
-        await handler(parsed.message);
-      } catch (error) {
-        logger.error({ err: error, adapterId: this.id }, 'Lark message handler error');
-      }
-    }
+    await this.notifyHandlers(parsed.message);
 
     return parsed;
   }
@@ -133,19 +104,11 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     options: SendMessageOptions
   ): Promise<ChannelResponse> {
     if (!this.started) {
-      return {
-        success: false,
-        error: 'Adapter not started',
-        timestamp: new Date(),
-      };
+      return createChannelError('Adapter not started');
     }
 
     if (!receiveId) {
-      return {
-        success: false,
-        error: 'Receive ID is required',
-        timestamp: new Date(),
-      };
+      return createChannelError('Receive ID is required');
     }
 
     try {
@@ -155,17 +118,9 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       if (this.config.botWebhookUrl) {
         return await this.sendViaBotWebhook(options);
       }
-      return {
-        success: false,
-        error: 'No outbound configuration. Set appId/appSecret or botWebhookUrl.',
-        timestamp: new Date(),
-      };
+      return createChannelError('No outbound configuration. Set appId/appSecret or botWebhookUrl.');
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Lark message send failed',
-        timestamp: new Date(),
-      };
+      return createChannelError(error instanceof Error ? error.message : 'Lark message send failed');
     }
   }
 
@@ -179,7 +134,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     }
 
     const raw = payload as Record<string, unknown>;
-    const type = this.getString(raw.type);
+    const type = getString(raw.type);
 
     if (type === 'url_verification') {
       return this.parseUrlVerification(raw);
@@ -193,9 +148,9 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       };
     }
 
-    const event = this.getRecord(raw.event);
-    const header = this.getRecord(raw.header);
-    const eventType = this.getString(header?.event_type);
+    const event = getRecord(raw.event);
+    const header = getRecord(raw.header);
+    const eventType = getString(header?.event_type);
 
     if (eventType !== 'im.message.receive_v1') {
       return {
@@ -213,7 +168,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       };
     }
 
-    const messageNode = this.getRecord(event.message);
+    const messageNode = getRecord(event.message);
     if (!messageNode) {
       return {
         kind: 'ignored',
@@ -222,12 +177,12 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       };
     }
 
-    const senderNode = this.getRecord(event.sender);
-    const senderIdNode = this.getRecord(senderNode?.sender_id);
+    const senderNode = getRecord(event.sender);
+    const senderIdNode = getRecord(senderNode?.sender_id);
     const userId =
-      this.getString(senderIdNode?.open_id) ||
-      this.getString(senderIdNode?.user_id) ||
-      this.getString(senderIdNode?.union_id);
+      getString(senderIdNode?.open_id) ||
+      getString(senderIdNode?.user_id) ||
+      getString(senderIdNode?.union_id);
 
     if (!userId) {
       return {
@@ -237,14 +192,14 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       };
     }
 
-    const rawContent = this.getString(messageNode.content) || '';
-    const messageType = this.getString(messageNode.message_type) || 'text';
+    const rawContent = getString(messageNode.content) || '';
+    const messageType = getString(messageNode.message_type) || 'text';
     const content = this.parseMessageContent(rawContent, messageType);
 
-    const chatType = this.getString(messageNode.chat_type) || this.getString(event.chat_type) || 'p2p';
-    const chatId = this.getString(messageNode.chat_id);
-    const messageId = this.getString(messageNode.message_id) || uuidv4();
-    const createTimeRaw = this.getString(messageNode.create_time);
+    const chatType = getString(messageNode.chat_type) || getString(event.chat_type) || 'p2p';
+    const chatId = getString(messageNode.chat_id);
+    const messageId = getString(messageNode.message_id) || uuidv4();
+    const createTimeRaw = getString(messageNode.create_time);
     const createTime = createTimeRaw ? Number.parseInt(createTimeRaw, 10) : Date.now();
     const timestamp = Number.isFinite(createTime) ? new Date(createTime) : new Date();
 
@@ -254,7 +209,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       .filter((mention): mention is { userId: string; userName?: string } => Boolean(mention));
 
     const isGroup = chatType !== 'p2p';
-    const userName = this.getString(senderIdNode?.name) || this.getString(senderNode?.name);
+    const userName = getString(senderIdNode?.name) || getString(senderNode?.name);
 
     const message: ChannelMessage = {
       id: messageId,
@@ -283,8 +238,8 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
   }
 
   private parseUrlVerification(payload: Record<string, unknown>): AdapterWebhookResult {
-    const challenge = this.getString(payload.challenge);
-    const token = this.getString(payload.token);
+    const challenge = getString(payload.challenge);
+    const token = getString(payload.token);
 
     if (!challenge) {
       return {
@@ -316,7 +271,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
 
     try {
       const parsed = JSON.parse(rawContent) as Record<string, unknown>;
-      return this.getString(parsed.text) || rawContent;
+      return getString(parsed.text) || rawContent;
     } catch {
       return rawContent;
     }
@@ -327,11 +282,11 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       return null;
     }
     const mentionNode = mention as Record<string, unknown>;
-    const idNode = this.getRecord(mentionNode.id);
+    const idNode = getRecord(mentionNode.id);
     const userId =
-      this.getString(idNode?.open_id) ||
-      this.getString(idNode?.user_id) ||
-      this.getString(idNode?.union_id);
+      getString(idNode?.open_id) ||
+      getString(idNode?.user_id) ||
+      getString(idNode?.union_id);
 
     if (!userId) {
       return null;
@@ -339,7 +294,7 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
 
     return {
       userId,
-      userName: this.getString(mentionNode.name),
+      userName: getString(mentionNode.name),
     };
   }
 
@@ -367,39 +322,23 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       }
     );
 
-    const result = await this.readJson(response);
+    const result = await readJson(response);
     if (!response.ok) {
-      return {
-        success: false,
-        error: `Lark API HTTP ${response.status}`,
-        timestamp: new Date(),
-      };
+      return createChannelError(`Lark API HTTP ${response.status}`);
     }
 
-    const code = this.getNumber(this.getRecord(result)?.code);
+    const code = getNumber(getRecord(result)?.code);
     if (typeof code === 'number' && code !== 0) {
-      return {
-        success: false,
-        error: this.getString(this.getRecord(result)?.msg) || 'Lark API returned non-zero code',
-        timestamp: new Date(),
-      };
+      return createChannelError(getString(getRecord(result)?.msg) || 'Lark API returned non-zero code');
     }
 
-    const data = this.getRecord(this.getRecord(result)?.data);
-    return {
-      success: true,
-      messageId: this.getString(data?.message_id),
-      timestamp: new Date(),
-    };
+    const data = getRecord(getRecord(result)?.data);
+    return createChannelSuccess({ messageId: getString(data?.message_id) });
   }
 
   private async sendViaBotWebhook(options: SendMessageOptions): Promise<ChannelResponse> {
     if (!this.config.botWebhookUrl) {
-      return {
-        success: false,
-        error: 'botWebhookUrl is not configured',
-        timestamp: new Date(),
-      };
+      return createChannelError('botWebhookUrl is not configured');
     }
 
     const body: Record<string, unknown> = {
@@ -423,29 +362,20 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       body: JSON.stringify(body),
     });
 
-    const result = await this.readJson(response);
+    const result = await readJson(response);
     if (!response.ok) {
-      return {
-        success: false,
-        error: `Lark bot webhook HTTP ${response.status}`,
-        timestamp: new Date(),
-      };
+      return createChannelError(`Lark bot webhook HTTP ${response.status}`);
     }
 
-    const normalized = this.getRecord(result);
-    const code = this.getNumber(normalized?.StatusCode) ?? this.getNumber(normalized?.code) ?? 0;
+    const normalized = getRecord(result);
+    const code = getNumber(normalized?.StatusCode) ?? getNumber(normalized?.code) ?? 0;
     if (code !== 0) {
-      return {
-        success: false,
-        error: this.getString(normalized?.StatusMessage) || this.getString(normalized?.msg) || 'Lark bot webhook failed',
-        timestamp: new Date(),
-      };
+      return createChannelError(
+        getString(normalized?.StatusMessage) || getString(normalized?.msg) || 'Lark bot webhook failed'
+      );
     }
 
-    return {
-      success: true,
-      timestamp: new Date(),
-    };
+    return createChannelSuccess();
   }
 
   private async getTenantAccessToken(): Promise<string> {
@@ -468,16 +398,16 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       }),
     });
 
-    const result = this.getRecord(await this.readJson(response));
+    const result = getRecord(await readJson(response));
     if (!response.ok) {
       throw new Error(`Lark token API HTTP ${response.status}`);
     }
 
-    const code = this.getNumber(result?.code);
-    const token = this.getString(result?.tenant_access_token);
-    const expire = this.getNumber(result?.expire);
+    const code = getNumber(result?.code);
+    const token = getString(result?.tenant_access_token);
+    const expire = getNumber(result?.expire);
     if (code !== 0 || !token) {
-      throw new Error(this.getString(result?.msg) || 'Lark token API failed');
+      throw new Error(getString(result?.msg) || 'Lark token API failed');
     }
 
     this.auth = {
@@ -490,39 +420,5 @@ export class LarkAdapter implements ChannelAdapter, WebhookCapableAdapter {
   private generateBotWebhookSign(timestamp: string, secret: string): string {
     const stringToSign = `${timestamp}\n${secret}`;
     return createHmac('sha256', stringToSign).digest('base64');
-  }
-
-  private async readJson(response: Response): Promise<unknown> {
-    const text = await response.text();
-    if (!text) {
-      return {};
-    }
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      return { raw: text };
-    }
-  }
-
-  private getRecord(value: unknown): Record<string, unknown> | undefined {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return undefined;
-    }
-    return value as Record<string, unknown>;
-  }
-
-  private getString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
-  }
-
-  private getNumber(value: unknown): number | undefined {
-    if (typeof value === 'number') {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    }
-    return undefined;
   }
 }

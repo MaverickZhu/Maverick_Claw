@@ -1,8 +1,38 @@
-import { Card, Input, Button, List, Avatar, Space, Select, Typography, Spin, Badge } from 'antd';
-import { SendOutlined, PlusOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import {
+  Card,
+  Input,
+  Button,
+  List,
+  Avatar,
+  Space,
+  Select,
+  Typography,
+  Spin,
+  Badge,
+  Upload,
+  Tag,
+  Tooltip,
+  Empty,
+  Popconfirm,
+} from 'antd';
+import {
+  SendOutlined,
+  PlusOutlined,
+  RobotOutlined,
+  UserOutlined,
+  PaperClipOutlined,
+  CloseOutlined,
+  FileOutlined,
+  PictureOutlined,
+  SunOutlined,
+  MoonOutlined,
+  DeleteOutlined,
+} from '@ant-design/icons';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useChatStore, type RemoteMessageSnapshot, type RemoteSessionSnapshot } from '../stores/chat';
+import { useThemeStore } from '../stores/theme';
 import { getWebSocketClient, type ConnectionStatus, type WSMessage } from '../api/websocket';
+import { apiGet, apiDelete, apiUpload } from '../api/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -12,12 +42,17 @@ import type {
   ChatChunkEventPayload,
   ChatCompleteEventPayload,
   ChatErrorEventPayload,
+  FileAttachment,
 } from '@maverick-claw/shared';
 
 const { TextArea } = Input;
 const { Text } = Typography;
 
-function MarkdownMessage({ content }: { content: string }) {
+/* ------------------------------------------------------------------ */
+/*  Markdown 渲染                                                      */
+/* ------------------------------------------------------------------ */
+
+function MarkdownMessage({ content, isDark }: { content: string; isDark: boolean }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -51,7 +86,8 @@ function MarkdownMessage({ content }: { content: string }) {
               style={{
                 padding: '2px 6px',
                 borderRadius: 6,
-                background: 'rgba(0,0,0,0.08)',
+                background: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
+                color: 'inherit',
               }}
             >
               {children}
@@ -64,6 +100,77 @@ function MarkdownMessage({ content }: { content: string }) {
     </ReactMarkdown>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  附件预览                                                            */
+/* ------------------------------------------------------------------ */
+
+function AttachmentPreview({ attachment }: { attachment: FileAttachment }) {
+  const isImage = attachment.mimeType.startsWith('image/');
+
+  if (isImage) {
+    return (
+      <a href={attachment.url} target="_blank" rel="noreferrer">
+        <img
+          src={attachment.url}
+          alt={attachment.name}
+          style={{
+            maxWidth: 200,
+            maxHeight: 150,
+            borderRadius: 8,
+            objectFit: 'cover',
+            border: '1px solid rgba(0,0,0,0.1)',
+          }}
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={attachment.url}
+      target="_blank"
+      rel="noreferrer"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '4px 8px',
+        background: 'rgba(0,0,0,0.05)',
+        borderRadius: 6,
+        color: '#1677ff',
+        fontSize: 12,
+        textDecoration: 'none',
+      }}
+    >
+      <FileOutlined />
+      <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {attachment.name}
+      </span>
+    </a>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  时间格式化                                                          */
+/* ------------------------------------------------------------------ */
+
+function formatMessageTime(timestamp: Date): string {
+  const now = new Date();
+  const date = new Date(timestamp);
+  const isToday = date.toDateString() === now.toDateString();
+  const isYesterday = new Date(now.getTime() - 86400000).toDateString() === date.toDateString();
+
+  const timeStr = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+  if (isToday) return timeStr;
+  if (isYesterday) return `昨天 ${timeStr}`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${timeStr}`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  类型 / Schema                                                      */
+/* ------------------------------------------------------------------ */
 
 interface ModelInfo {
   id: string;
@@ -159,6 +266,190 @@ function parseChatCompletePayload(payload: unknown): ChatCompleteEventPayload | 
   return parsed.success ? parsed.data : null;
 }
 
+/* ------------------------------------------------------------------ */
+/*  单条消息组件                                                        */
+/* ------------------------------------------------------------------ */
+
+interface MessageItemProps {
+  msg: ReturnType<typeof useChatStore.getState>['sessions'][number]['messages'][number];
+  isDark: boolean;
+}
+
+function MessageItem({ msg, isDark }: MessageItemProps) {
+  const isUser = msg.role === 'user';
+  const isError = msg.content.startsWith('❌');
+
+  const bubbleBg = isError
+    ? isDark
+      ? '#4a1c1c'
+      : '#fff2f0'
+    : isUser
+      ? '#0ea5e9'
+      : isDark
+        ? '#262626'
+        : '#f0f0f0';
+
+  const bubbleColor = isError
+    ? isDark
+      ? '#ffccc7'
+      : '#cf1322'
+    : isUser
+      ? '#fff'
+      : isDark
+        ? '#e5e5e5'
+        : '#000';
+
+  const avatarBg = isUser ? '#52c41a' : '#0ea5e9';
+  const avatarIcon = isUser ? <UserOutlined /> : <RobotOutlined />;
+
+  return (
+    <List.Item
+      style={{
+        justifyContent: isUser ? 'flex-end' : 'flex-start',
+        padding: '6px 0',
+        borderBottom: 'none',
+      }}
+    >
+      <Space align="start" size={10}>
+        {!isUser && (
+          <Avatar
+            style={{
+              backgroundColor: avatarBg,
+              flexShrink: 0,
+              marginTop: 4,
+            }}
+            icon={avatarIcon}
+            size="small"
+          />
+        )}
+
+        <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+          <div
+            style={{
+              background: bubbleBg,
+              color: bubbleColor,
+              padding: '10px 14px',
+              borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+              wordBreak: 'break-word',
+              lineHeight: 1.6,
+              boxShadow: isDark
+                ? '0 1px 2px rgba(0,0,0,0.3)'
+                : '0 1px 2px rgba(0,0,0,0.06)',
+            }}
+          >
+            {msg.role === 'assistant' || msg.role === 'system' ? (
+              <div style={{ color: isError ? 'inherit' : isDark ? '#e5e5e5' : '#111827' }}>
+                <MarkdownMessage content={msg.content} isDark={isDark} />
+              </div>
+            ) : (
+              <Text style={{ color: 'inherit', whiteSpace: 'pre-wrap' }}>{msg.content}</Text>
+            )}
+
+            {/* Attachments */}
+            {msg.attachments && msg.attachments.length > 0 && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {msg.attachments.map((att) => (
+                  <AttachmentPreview key={att.fileId} attachment={att} />
+                ))}
+              </div>
+            )}
+
+            {/* Streaming cursor */}
+            {msg.isStreaming && (
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 6,
+                  height: 16,
+                  background: isDark ? '#0ea5e9' : '#0ea5e9',
+                  marginLeft: 4,
+                  borderRadius: 1,
+                  animation: 'chat-cursor-blink 1s step-end infinite',
+                  verticalAlign: 'middle',
+                }}
+              />
+            )}
+          </div>
+
+          <Tooltip title={msg.timestamp.toLocaleString('zh-CN')}>
+            <span
+              style={{
+                fontSize: 11,
+                color: isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)',
+                marginTop: 4,
+                padding: '0 4px',
+              }}
+            >
+              {formatMessageTime(msg.timestamp)}
+            </span>
+          </Tooltip>
+        </div>
+
+        {isUser && (
+          <Avatar
+            style={{
+              backgroundColor: avatarBg,
+              flexShrink: 0,
+              marginTop: 4,
+            }}
+            icon={avatarIcon}
+            size="small"
+          />
+        )}
+      </Space>
+    </List.Item>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  空状态                                                              */
+/* ------------------------------------------------------------------ */
+
+function ChatEmptyState({ isDark }: { isDark: boolean }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 40,
+      }}
+    >
+      <Empty
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+        description={
+          <span style={{ color: isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)' }}>
+            开始新对话，或输入消息与 AI 交流
+          </span>
+        }
+      />
+      <div
+        style={{
+          marginTop: 16,
+          padding: '12px 20px',
+          borderRadius: 12,
+          background: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)',
+          border: `1px dashed ${isDark ? 'rgba(255,255,255,0.1)' : '#d9d9d9'}`,
+          color: isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)',
+          fontSize: 13,
+          textAlign: 'center',
+          lineHeight: 1.6,
+        }}
+      >
+        💡 提示：支持 Markdown 格式、代码高亮、文件上传
+        <br />
+        Shift + Enter 换行，Enter 直接发送
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  主页面                                                              */
+/* ================================================================== */
+
 function ChatPage() {
   const {
     sessions,
@@ -181,6 +472,10 @@ function ChatPage() {
   const [isConnecting, setIsConnecting] = useState(true);
   const [hasSyncedSessions, setHasSyncedSessions] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const { theme, toggleTheme } = useThemeStore();
+  const isDark = theme === 'dark';
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMessageIdsRef = useRef<Record<string, string | undefined>>({});
   const currentSessionIdRef = useRef<string | null>(null);
@@ -190,33 +485,31 @@ function ChatPage() {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const response = await fetch('/api/models');
-        if (response.ok) {
-          const parsed = parseModelsResponse(await response.json());
-          if (!parsed) {
-            return;
-          }
-          const data = parsed;
-          const models = data.models || [];
-          const enabledModels = models.filter((m) => m.enabled);
-          setAvailableModels(enabledModels);
+        const response = await apiGet('/api/models');
+        const parsed = parseModelsResponse(response);
+        if (!parsed) {
+          return;
+        }
+        const data = parsed;
+        const models = data.models || [];
+        const enabledModels = models.filter((m) => m.enabled);
+        setAvailableModels(enabledModels);
 
-          const enabledModelRefs = new Set(
-            enabledModels.map((model) => `${model.provider}:${model.id}`)
-          );
-          const fallbackModel =
-            (data.defaultModel && enabledModelRefs.has(data.defaultModel) && data.defaultModel) ||
-            (enabledModels[0] ? `${enabledModels[0].provider}:${enabledModels[0].id}` : undefined);
+        const enabledModelRefs = new Set(
+          enabledModels.map((model) => `${model.provider}:${model.id}`)
+        );
+        const fallbackModel =
+          (data.defaultModel && enabledModelRefs.has(data.defaultModel) && data.defaultModel) ||
+          (enabledModels[0] ? `${enabledModels[0].provider}:${enabledModels[0].id}` : undefined);
 
-          if (fallbackModel && (!selectedModel || !enabledModelRefs.has(selectedModel))) {
-            setSelectedModel(fallbackModel);
-          }
+        if (fallbackModel && (!selectedModel || !enabledModelRefs.has(selectedModel))) {
+          setSelectedModel(fallbackModel);
         }
       } catch (error) {
         console.error('Failed to fetch models:', error);
       }
     };
-    
+
     fetchModels();
   }, []);
 
@@ -225,12 +518,8 @@ function ChatPage() {
   const loadSessionMessages = useCallback(
     async (sessionId: string) => {
       try {
-        const response = await fetch(`/api/sessions/${sessionId}/messages`);
-        if (!response.ok) {
-          return;
-        }
-
-        const messages = parseSessionMessagesPayload(await response.json());
+        const data = await apiGet(`/api/sessions/${sessionId}/messages`);
+        const messages = parseSessionMessagesPayload(data);
         replaceSessionMessages(sessionId, messages);
       } catch (error) {
         console.error('Failed to load session messages:', error);
@@ -413,11 +702,46 @@ function ChatPage() {
     };
   }, [currentSessionId, loadSessionMessages]);
 
-  const handleSend = useCallback(async () => {
-    if (!inputValue.trim() || !currentSessionId || isStreaming || availableModels.length === 0) return;
+  const handleUpload = async (file: File): Promise<FileAttachment | null> => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
 
-    const content = inputValue.trim();
+      const result = await apiUpload<FileAttachment>('/api/upload', formData);
+      return result;
+    } catch (error) {
+      console.error('Failed to upload file:', error);
+      return null;
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    for (const file of Array.from(files)) {
+      const result = await handleUpload(file);
+      if (result) {
+        setAttachments((prev) => [...prev, result]);
+      }
+    }
+    e.target.value = '';
+  };
+
+  const handleRemoveAttachment = (fileId: string) => {
+    setAttachments((prev) => prev.filter((a) => a.fileId !== fileId));
+  };
+
+  const handleSend = useCallback(async () => {
+    if ((!inputValue.trim() && attachments.length === 0) || !currentSessionId || isStreaming || availableModels.length === 0) return;
+
+    const content = inputValue.trim() || '[文件消息]';
     setInputValue('');
+    const currentAttachments = attachments;
+    setAttachments([]);
 
     // Add user message
     const userMessageId = Math.random().toString(36).substring(2, 15);
@@ -426,6 +750,7 @@ function ChatPage() {
       role: 'user',
       content,
       timestamp: new Date(),
+      attachments: currentAttachments,
     });
 
     // Start streaming
@@ -437,6 +762,7 @@ function ChatPage() {
         sessionId: currentSessionId,
         content,
         modelId: selectedModel,
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
       });
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -448,11 +774,25 @@ function ChatPage() {
         timestamp: new Date(),
       });
     }
-  }, [inputValue, currentSessionId, isStreaming, selectedModel, availableModels.length, addMessage, setStreaming]);
+  }, [inputValue, currentSessionId, isStreaming, selectedModel, availableModels.length, addMessage, setStreaming, attachments]);
 
   const handleNewSession = async () => {
     await createSession({ modelId: selectedModel });
   };
+
+  const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await apiDelete(`/api/sessions/${sessionId}`);
+      // Refresh session list
+      void syncSessions();
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+    }
+  };
+
+  const messages = currentSession?.messages || [];
+  const hasMessages = messages.length > 0;
 
   return (
     <Card
@@ -462,7 +802,7 @@ function ChatPage() {
           <Select
             value={selectedModel}
             onChange={setSelectedModel}
-            options={availableModels.length > 0 
+            options={availableModels.length > 0
               ? availableModels.map((model) => ({
                   value: `${model.provider}:${model.id}`,
                   label: model.name,
@@ -477,6 +817,12 @@ function ChatPage() {
           ) : (
             <Badge status="success" text="已连接" />
           )}
+          <Button
+            type="text"
+            icon={isDark ? <SunOutlined /> : <MoonOutlined />}
+            onClick={toggleTheme}
+            title={isDark ? '切换浅色模式' : '切换深色模式'}
+          />
         </Space>
       }
       extra={
@@ -485,76 +831,122 @@ function ChatPage() {
         </Button>
       }
       style={{ height: 'calc(100vh - 112px)', display: 'flex', flexDirection: 'column' }}
-      bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}
+      bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}
     >
       {/* Session tabs */}
-      <div style={{ padding: '8px 16px', borderBottom: '1px solid #f0f0f0', display: 'flex', gap: 8 }}>
+      <div
+        style={{
+          padding: '8px 16px',
+          borderBottom: `1px solid ${isDark ? '#303030' : '#f0f0f0'}`,
+          display: 'flex',
+          gap: 8,
+          overflowX: 'auto',
+          flexWrap: 'nowrap',
+          scrollbarWidth: 'thin',
+        }}
+      >
         {sessions.map((session) => (
           <Button
             key={session.id}
             type={session.id === currentSessionId ? 'primary' : 'default'}
             size="small"
             onClick={() => selectSession(session.id)}
+            style={{
+              flexShrink: 0,
+              maxWidth: 160,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
           >
-            {session.title}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{session.title}</span>
+            <CloseOutlined
+              onClick={(e) => handleDeleteSession(session.id, e)}
+              style={{
+                fontSize: 10,
+                opacity: 0.6,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { (e.target as HTMLElement).style.opacity = '1'; }}
+              onMouseLeave={(e) => { (e.target as HTMLElement).style.opacity = '0.6'; }}
+            />
           </Button>
         ))}
       </div>
 
       {/* Messages */}
-      <List
-        style={{ flex: 1, overflow: 'auto', padding: '16px' }}
-        dataSource={currentSession?.messages || []}
-        renderItem={(msg) => (
-          <List.Item
-            style={{
-              justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              padding: '8px 0',
-            }}
-          >
-            <Space align="start">
-              {msg.role === 'assistant' && (
-                <Avatar style={{ backgroundColor: '#0ea5e9' }} icon={<RobotOutlined />} />
-              )}
-              <div
-                style={{
-                  background: msg.role === 'user' ? '#0ea5e9' : '#f0f0f0',
-                  color: msg.role === 'user' ? '#fff' : '#000',
-                  padding: '12px 16px',
-                  borderRadius: '12px',
-                  maxWidth: '600px',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {msg.role === 'assistant' || msg.role === 'system' ? (
-                  <div style={{ color: '#111827' }}>
-                    <MarkdownMessage content={msg.content} />
-                  </div>
-                ) : (
-                  <Text style={{ color: 'inherit', whiteSpace: 'pre-wrap' }}>{msg.content}</Text>
-                )}
-                {msg.isStreaming && <Spin size="small" style={{ marginLeft: 8 }} />}
-                <div style={{ fontSize: '12px', opacity: 0.6, marginTop: '4px' }}>
-                  {msg.timestamp.toLocaleTimeString()}
-                </div>
-              </div>
-              {msg.role === 'user' && (
-                <Avatar style={{ backgroundColor: '#52c41a' }} icon={<UserOutlined />} />
-              )}
-            </Space>
-          </List.Item>
-        )}
-      />
+      {hasMessages ? (
+        <List
+          style={{
+            flex: 1,
+            overflow: 'auto',
+            padding: '12px 16px',
+          }}
+          dataSource={messages}
+          renderItem={(msg) => <MessageItem msg={msg} isDark={isDark} />}
+        />
+      ) : (
+        <ChatEmptyState isDark={isDark} />
+      )}
       <div ref={messagesEndRef} />
 
       {/* Input */}
-      <div style={{ padding: '16px', borderTop: '1px solid #f0f0f0' }}>
+      <div
+        style={{
+          padding: '12px 16px',
+          borderTop: `1px solid ${isDark ? '#303030' : '#f0f0f0'}`,
+          background: isDark ? '#141414' : '#fff',
+        }}
+      >
+        {/* Selected attachments */}
+        {attachments.length > 0 && (
+          <div style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {attachments.map((att) => (
+              <Tag
+                key={att.fileId}
+                closable
+                onClose={() => handleRemoveAttachment(att.fileId)}
+                icon={att.mimeType.startsWith('image/') ? <PictureOutlined /> : <FileOutlined />}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                }}
+              >
+                <span style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {att.name}
+                </span>
+              </Tag>
+            ))}
+          </div>
+        )}
         <Space.Compact style={{ width: '100%' }}>
+          <input
+            type="file"
+            id="file-upload"
+            style={{ display: 'none' }}
+            multiple
+            onChange={handleFileSelect}
+            disabled={isStreaming || isConnecting || availableModels.length === 0 || uploading}
+          />
+          <Tooltip title="上传文件">
+            <Button
+              icon={<PaperClipOutlined />}
+              onClick={() => document.getElementById('file-upload')?.click()}
+              loading={uploading}
+              disabled={isStreaming || isConnecting || availableModels.length === 0}
+            />
+          </Tooltip>
           <TextArea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="输入消息... (Shift+Enter 换行)"
-            autoSize={{ minRows: 1, maxRows: 4 }}
+            placeholder={attachments.length > 0 ? '输入消息（可选）…' : '输入消息… (Shift+Enter 换行)'}
+            autoSize={{ minRows: 1, maxRows: 6 }}
             onPressEnter={(e) => {
               if (!e.shiftKey) {
                 e.preventDefault();
@@ -562,6 +954,7 @@ function ChatPage() {
               }
             }}
             disabled={isStreaming || isConnecting || availableModels.length === 0}
+            style={{ borderRadius: 0 }}
           />
           <Button
             type="primary"
@@ -570,7 +963,7 @@ function ChatPage() {
             loading={isStreaming}
             disabled={isConnecting || availableModels.length === 0}
           >
-            发送
+            {isStreaming ? '生成中' : '发送'}
           </Button>
         </Space.Compact>
       </div>

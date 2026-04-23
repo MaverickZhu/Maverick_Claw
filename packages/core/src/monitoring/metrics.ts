@@ -80,6 +80,28 @@ const appUptimeSeconds = new Gauge({
   registers: [registry],
 });
 
+const chatTokensTotal = new Counter({
+  name: 'maverick_claw_chat_tokens_total',
+  help: 'Total number of tokens used in chat completions',
+  labelNames: ['provider', 'model', 'token_type'] as const,
+  registers: [registry],
+});
+
+const chatLatencySeconds = new Histogram({
+  name: 'maverick_claw_chat_latency_seconds',
+  help: 'Chat completion latency in seconds',
+  labelNames: ['provider', 'model'] as const,
+  buckets: [0.1, 0.3, 0.5, 1, 2, 3, 5, 10, 20, 30, 60],
+  registers: [registry],
+});
+
+const chatRequestsTotal = new Counter({
+  name: 'maverick_claw_chat_requests_total',
+  help: 'Total number of chat completion requests',
+  labelNames: ['provider', 'model'] as const,
+  registers: [registry],
+});
+
 export const metricsContentType = registry.contentType;
 
 export function markHttpRequestStarted(): bigint {
@@ -151,6 +173,44 @@ export function updateStorageMetrics(params: {
 
 export function updateAppUptime(valueSeconds: number = process.uptime()): void {
   appUptimeSeconds.set(Math.max(0, valueSeconds));
+}
+
+export function recordChatTokens(params: {
+  provider: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+}): void {
+  const labels = {
+    provider: normalizeLabel(params.provider),
+    model: normalizeLabel(params.model),
+  };
+  chatTokensTotal.inc({ ...labels, token_type: 'prompt' }, params.promptTokens);
+  chatTokensTotal.inc({ ...labels, token_type: 'completion' }, params.completionTokens);
+}
+
+export function recordChatLatency(params: {
+  provider: string;
+  model: string;
+  latencyMs: number;
+}): void {
+  chatLatencySeconds.observe(
+    {
+      provider: normalizeLabel(params.provider),
+      model: normalizeLabel(params.model),
+    },
+    params.latencyMs / 1000
+  );
+}
+
+export function recordChatRequest(params: {
+  provider: string;
+  model: string;
+}): void {
+  chatRequestsTotal.inc({
+    provider: normalizeLabel(params.provider),
+    model: normalizeLabel(params.model),
+  });
 }
 
 export async function getMetricsSnapshot(): Promise<string> {

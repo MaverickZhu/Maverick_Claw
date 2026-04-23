@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import staticPlugin from '@fastify/static';
 import websocket from '@fastify/websocket';
+import multipart from '@fastify/multipart';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { ConfigManager } from '../config/manager.js';
@@ -9,6 +10,13 @@ import type { DatabaseManager } from '../storage/db.js';
 import { SessionManager } from '../storage/session.js';
 import { MessageManager } from '../storage/message.js';
 import { getTokenManager } from '../auth/token.js';
+import { UserService } from '../auth/user-service.js';
+import { RoleService } from '../auth/role-service.js';
+import { AuthService } from '../auth/service.js';
+import { OAuthService } from '../auth/oauth-service.js';
+import { LDAPService } from '../auth/ldap-service.js';
+import { SSOService } from '../auth/sso-service.js';
+import { hashPassword } from '../auth/password.js';
 import { setupWebSocketRoutes } from './websocket.js';
 import { setupHttpRoutes } from './http.js';
 import { logger } from '../utils/logger.js';
@@ -16,7 +24,12 @@ import { getModelRegistry, type ModelRegistry } from '../agent/model.js';
 import { getDeepSeekProvider } from '../models/providers/deepseek.js';
 import { getKimiProvider } from '../models/providers/kimi.js';
 import { getOpenAIProvider } from '../models/providers/openai.js';
+import { getOllamaProvider } from '../models/providers/ollama.js';
+import { getQwenProvider } from '../models/providers/qwen.js';
+import { getErnieProvider } from '../models/providers/ernie.js';
+import { getDoubaoProvider } from '../models/providers/doubao.js';
 import { registerBuiltinTools, getToolRegistry } from '../tools/index.js';
+import type { ToolRegistry } from '../tools/registry.js';
 import { 
   getChannelRegistry, 
   ChannelRouter, 
@@ -30,6 +43,14 @@ import {
   parseChannelConfig,
 } from '../channels/index.js';
 import { getQueueService, createMessageProcessor, closeQueueService } from '../queue/index.js';
+import { getUploadService } from '../upload/index.js';
+import { getStatsService, type StatsService } from '../stats/service.js';
+import { getExportService } from '../export/service.js';
+import { getImportService } from '../import/service.js';
+import { AuditService } from '../audit/service.js';
+import { WorkflowService } from '../workflows/service.js';
+import { PluginManager } from '../plugins/manager.js';
+import { PluginMarketService } from '../plugins/market-service.js';
 import { reportError } from '../monitoring/error-tracking.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,8 +93,55 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
   fastify.decorate('dbManager', options.dbManager);
   fastify.decorate('sessionManager', sessionManager);
   fastify.decorate('messageManager', messageManager);
-  fastify.decorate('tokenManager', getTokenManager());
+  // Initialize auth services
+  const tokenManager = getTokenManager(options.dbManager);
+  const userService = new UserService(options.dbManager);
+  const roleService = new RoleService(options.dbManager);
+  const authService = new AuthService(userService, roleService, tokenManager);
+
+  fastify.decorate('tokenManager', tokenManager);
+  fastify.decorate('userService', userService);
+  fastify.decorate('roleService', roleService);
+  fastify.decorate('authService', authService);
+
+  const oauthService = new OAuthService(options.dbManager, userService, roleService, tokenManager);
+  const ldapService = new LDAPService(userService, roleService, tokenManager);
+  const ssoService = new SSOService(oauthService, ldapService);
+  fastify.decorate('oauthService', oauthService);
+  fastify.decorate('ldapService', ldapService);
+  fastify.decorate('ssoService', ssoService);
   fastify.decorate('modelRegistry', modelRegistry);
+  fastify.decorate('uploadService', getUploadService());
+  fastify.decorate('statsService', getStatsService(options.dbManager, options.configManager));
+  fastify.decorate('exportService', getExportService(options.dbManager, options.configManager, fastify.uploadService));
+  fastify.decorate('importService', getImportService(options.dbManager));
+
+  // Plugin manager
+  const pluginManager = new PluginManager(
+    {
+      modelRegistry,
+      toolRegistry: getToolRegistry(),
+      channelRegistry: getChannelRegistry(),
+      configManager: options.configManager,
+      dbManager: options.dbManager,
+      sessionManager,
+      messageManager,
+      logger,
+    },
+    options.dbManager
+  );
+
+  // Plugin market service
+  const pluginMarketService = new PluginMarketService(options.dbManager, {
+    registryUrl: options.configManager.get().plugins?.registryUrl,
+  });
+
+  const auditService = new AuditService(options.dbManager);
+  const workflowService = new WorkflowService(options.dbManager);
+  fastify.decorate('auditService', auditService);
+  fastify.decorate('workflowService', workflowService);
+  fastify.decorate('pluginManager', pluginManager);
+  fastify.decorate('pluginMarketService', pluginMarketService);
 
   // Register plugins
   async function registerPlugins() {
@@ -86,6 +154,13 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
     // WebSocket support
     await fastify.register(websocket);
 
+    // Multipart file upload support
+    await fastify.register(multipart, {
+      limits: {
+        fileSize: 50 * 1024 * 1024, // 50MB
+      },
+    });
+
     // Static files (Web UI)
     const webUiPath = path.resolve(__dirname, '../../../web-ui/dist');
     try {
@@ -97,6 +172,18 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
       logger.info('Web UI served from: ' + webUiPath);
     } catch {
       logger.warn('Web UI build not found, serving API only');
+    }
+
+    // Static files (Uploads)
+    const uploadService = getUploadService();
+    try {
+      await fastify.register(staticPlugin, {
+        root: uploadService.getUploadsDir(),
+        prefix: '/uploads',
+        decorateReply: false,
+      });
+    } catch {
+      logger.warn('Uploads directory not available');
     }
   }
 
@@ -181,6 +268,58 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
     } else {
       logger.warn('Kimi API key not configured, provider disabled');
     }
+
+    // Register Ollama (local models)
+    const ollamaConfig = config.models.find(m => m.provider === 'ollama');
+    const ollama = getOllamaProvider();
+    if (ollamaConfig?.baseUrl) {
+      ollama.configure({ baseUrl: ollamaConfig.baseUrl });
+    }
+    if (await ollama.validateConfig()) {
+      modelRegistry.register(ollama);
+      logger.info('Registered Ollama provider');
+    } else {
+      logger.warn('Ollama not available, provider disabled');
+    }
+
+    // Register Qwen (通义千问)
+    const qwenConfig = config.models.find(m => m.provider === 'qwen');
+    const qwen = getQwenProvider();
+    if (qwenConfig?.apiKey) {
+      qwen.configure({ apiKey: qwenConfig.apiKey });
+    }
+    if (await qwen.validateConfig()) {
+      modelRegistry.register(qwen);
+      logger.info('Registered Qwen provider');
+    } else {
+      logger.warn('Qwen API key not configured, provider disabled');
+    }
+
+    // Register ERNIE (文心一言)
+    const ernieConfig = config.models.find(m => m.provider === 'ernie');
+    const ernie = getErnieProvider();
+    if (ernieConfig?.apiKey) {
+      ernie.configure({ apiKey: ernieConfig.apiKey });
+    }
+    if (await ernie.validateConfig()) {
+      modelRegistry.register(ernie);
+      logger.info('Registered ERNIE provider');
+    } else {
+      logger.warn('ERNIE API key not configured, provider disabled');
+    }
+
+    // Register Doubao (豆包)
+    const doubaoConfig = config.models.find(m => m.provider === 'doubao');
+    const doubao = getDoubaoProvider();
+    if (doubaoConfig?.apiKey) {
+      doubao.configure({ apiKey: doubaoConfig.apiKey });
+    }
+    if (await doubao.validateConfig()) {
+      modelRegistry.register(doubao);
+      logger.info('Registered Doubao provider');
+    } else {
+      logger.warn('Doubao API key not configured, provider disabled');
+    }
   }
 
   // Initialize channel adapters
@@ -204,6 +343,7 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
     // Initialize channel session manager
     const channelSessionManager = getChannelSessionManager({
       sessionManager,
+      dbManager: gatewayOptions.dbManager,
       defaultModelId: `${defaultModel.provider}:${defaultModel.id}`,
     });
 
@@ -368,10 +508,37 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
 
   return {
     async start() {
+      // Clean up expired oauth states periodically
+      setInterval(() => {
+        oauthService.cleanupStates();
+      }, 15 * 60 * 1000); // Every 15 minutes
+      oauthService.cleanupStates();
+
+      // Initialize builtin roles
+      await roleService.initBuiltinRoles();
+
+      // Create default admin user if no users exist and master password is configured
+      const existingUsers = await userService.listUsers();
+      if (existingUsers.length === 0) {
+        const config = options.configManager.get();
+        const masterPassword = config.auth?.token;
+        if (masterPassword && config.auth?.type === 'token') {
+          const adminRole = await roleService.getRoleByName('admin');
+          await userService.createUser({
+            name: 'Admin',
+            email: 'admin@local',
+            password: masterPassword,
+            roleId: adminRole?.id,
+          });
+          logger.info('Created default admin user from config master password');
+        }
+      }
+
       await registerProviders();
       await initializeChannels();
       await registerPlugins();
       await setupRoutes();
+      await pluginManager.loadAll();
       
       await fastify.listen({
         port: options.port,
@@ -380,6 +547,8 @@ export function createGatewayServer(gatewayOptions: Omit<GatewayOptions, 'sessio
     },
 
     async stop() {
+      await pluginManager.stopAll();
+
       // Close queue service gracefully
       try {
         await closeQueueService();
@@ -405,5 +574,19 @@ declare module 'fastify' {
     messageManager: MessageManager;
     tokenManager: ReturnType<typeof getTokenManager>;
     modelRegistry: ModelRegistry;
+    uploadService: ReturnType<typeof getUploadService>;
+    statsService: StatsService;
+    exportService: ReturnType<typeof getExportService>;
+    importService: ReturnType<typeof getImportService>;
+    userService: UserService;
+    roleService: RoleService;
+    authService: AuthService;
+    auditService: AuditService;
+    workflowService: WorkflowService;
+    oauthService: OAuthService;
+    ldapService: LDAPService;
+    ssoService: SSOService;
+    pluginManager: import('../plugins/manager.js').PluginManager;
+    pluginMarketService: import('../plugins/market-service.js').PluginMarketService;
   }
 }

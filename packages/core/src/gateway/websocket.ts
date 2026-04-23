@@ -13,6 +13,7 @@ import type { GatewayOptions } from './server.js';
 import { logger } from '../utils/logger.js';
 import { setLogContext, withLogContext } from '../utils/log-context.js';
 import { ChatService } from '../agent/chat.js';
+import type { StatsService } from '../stats/service.js';
 import { getTokenManager } from '../auth/token.js';
 import { ADMIN_SCOPE, Scope, USER_DEFAULT_SCOPES, hasAllScopes } from '../auth/scopes.js';
 import { listWorkflowTemplates } from '../tools/workflows.js';
@@ -295,7 +296,8 @@ export async function setupWebSocketRoutes(
   const clientsByDeviceId = new Map<string, string>();
   const sessionWatchers = new Map<string, Set<string>>();
   const tokenManager = getTokenManager();
-  const chatService = new ChatService(fastify.sessionManager, fastify.messageManager);
+  const statsService: StatsService = fastify.statsService;
+  const chatService = new ChatService(fastify.sessionManager, fastify.messageManager, statsService);
   recordWsConnectedClients(0);
 
   const watchSession = (client: ConnectedClient, sessionId: string) => {

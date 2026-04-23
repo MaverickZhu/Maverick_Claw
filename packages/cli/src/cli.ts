@@ -27,7 +27,7 @@ console.log(chalk.gray('面向中国用户的本地/自托管多通道 AI 助手
 program
   .name('mc')
   .description('Maverick_Claw CLI - 多通道 AI 网关管理工具')
-  .version('0.1.0');
+  .version('1.0.0');
 
 // Register commands
 program.addCommand(gatewayCommand);

@@ -90,6 +90,29 @@ export interface AdapterWebhookResult {
   body?: unknown;
 }
 
+export interface WebhookUrlVerificationResult {
+  kind: 'success' | 'ignored' | 'error';
+  statusCode?: number;
+  body?: unknown;
+}
+
 export interface WebhookCapableAdapter extends ChannelAdapter {
   processWebhook(payload: unknown, signature?: string): Promise<AdapterWebhookResult>;
+  verifyWebhookUrl?(query: Record<string, string | string[] | undefined>): Promise<WebhookUrlVerificationResult>;
+}
+
+export function createChannelError(error: string): ChannelResponse {
+  return {
+    success: false,
+    error,
+    timestamp: new Date(),
+  };
+}
+
+export function createChannelSuccess(options?: { messageId?: string }): ChannelResponse {
+  return {
+    success: true,
+    messageId: options?.messageId,
+    timestamp: new Date(),
+  };
 }

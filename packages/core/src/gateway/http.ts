@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import path from 'path';
 import { z } from 'zod';
 import { authMiddleware, requireScopes } from '../auth/middleware.js';
 import { ADMIN_SCOPE, Scope } from '../auth/scopes.js';
+import { isAdmin } from '../auth/ownership.js';
 import { logger } from '../utils/logger.js';
 import { setLogContext } from '../utils/log-context.js';
 import {
@@ -10,8 +12,11 @@ import {
   type WebhookCapableAdapter,
 } from '../channels/index.js';
 import { ChatService } from '../agent/chat.js';
+import type { StatsService } from '../stats/service.js';
+import type { ExportService } from '../export/service.js';
+import type { ImportService } from '../import/service.js';
 import type { ModelProviderCapabilityReport, ModelProviderCapabilitySnapshot } from '../agent/model.js';
-import { listWorkflowTemplates } from '../tools/workflows.js';
+import { listWorkflowTemplates, getWorkflowTemplate } from '../tools/workflows.js';
 import { getBuiltinProviderCapabilityMatrix } from '../models/provider-capabilities.js';
 import {
   getMetricsSnapshot,
@@ -33,6 +38,7 @@ import {
   toHttpErrorBody,
 } from '../errors/index.js';
 import type { QueueName } from '../queue/types.js';
+import type { UploadService } from '../upload/service.js';
 
 // Validation schemas
 const CreateSessionSchema = z.object({
@@ -52,9 +58,63 @@ const RunWorkflowSchema = z.object({
   createSessionIfMissing: z.boolean().default(true),
 });
 
+const emailSchema = z.string().refine((val) => /^[^\s@]+@[^\s@]+$/.test(val), { message: 'Invalid email' });
+
 const LoginRequestSchema = z.object({
+  email: emailSchema.optional(),
   password: z.string().optional(),
   scopes: z.array(z.string().min(1)).optional(),
+});
+
+const CreateUserSchema = z.object({
+  name: z.string().min(1),
+  email: emailSchema.optional(),
+  password: z.string().min(6),
+  roleId: z.string().optional(),
+});
+
+const UpdateUserSchema = z.object({
+  name: z.string().min(1).optional(),
+  email: emailSchema.optional(),
+  roleId: z.string().optional(),
+  status: z.enum(['active', 'inactive']).optional(),
+});
+
+const UpdatePasswordSchema = z.object({
+  oldPassword: z.string().min(1),
+  newPassword: z.string().min(6),
+});
+
+const CreateRoleSchema = z.object({
+  name: z.string().min(1),
+  scopes: z.array(z.string().min(1)),
+});
+
+const UpdateRoleSchema = z.object({
+  name: z.string().min(1).optional(),
+  scopes: z.array(z.string().min(1)).optional(),
+});
+
+const CreateWorkflowSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  definition: z.record(z.unknown()),
+});
+
+const UpdateWorkflowSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional(),
+  definition: z.record(z.unknown()).optional(),
+});
+
+const AuditQuerySchema = z.object({
+  action: z.string().optional(),
+  resourceType: z.string().optional(),
+  userId: z.string().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.coerce.number().min(1).max(1000).optional().default(100),
+  offset: z.coerce.number().min(0).optional().default(0),
 });
 
 const SetDefaultModelSchema = z.object({
@@ -278,6 +338,18 @@ function sendNotFoundError(
   });
 }
 
+function sendUnauthorizedError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  message: string
+): void {
+  sendHttpError(request, reply, createUnauthorizedError(message), {
+    code: StandardErrorCode.Unauthorized,
+    message,
+    statusCode: 401,
+  });
+}
+
 function parseRequestInput<T>(
   schema: z.ZodSchema<T>,
   input: unknown,
@@ -302,7 +374,11 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   const sessionManager = fastify.sessionManager;
   const messageManager = fastify.messageManager;
   const tokenManager = fastify.tokenManager;
-  const chatService = new ChatService(sessionManager, messageManager);
+  const uploadService: UploadService = fastify.uploadService;
+  const statsService: StatsService = fastify.statsService;
+  const exportService: ExportService = fastify.exportService;
+  const importService: ImportService = fastify.importService;
+  const chatService = new ChatService(sessionManager, messageManager, statsService);
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
   const applyHttpLogContext = (request: FastifyRequest): void => {
     setLogContext({
@@ -426,6 +502,41 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
     };
   });
 
+  // Stats API
+  fastify.get('/api/stats/overview', async () => {
+    return statsService.getOverview();
+  });
+
+  fastify.get('/api/stats/daily', async (request) => {
+    const days = Number((request.query as Record<string, string>).days) || 30;
+    return statsService.getDailyStats(days);
+  });
+
+  fastify.get('/api/stats/models', async () => {
+    return statsService.getModelStats();
+  });
+
+  // Export
+  fastify.post('/api/export', async (_request, reply) => {
+    const buffer = await exportService.exportAll();
+    reply.header('Content-Type', 'application/zip');
+    reply.header('Content-Disposition', `attachment; filename="maverick-claw-export-${Date.now()}.zip"`);
+    reply.send(buffer);
+  });
+
+  // Import
+  fastify.post('/api/import', async (request, reply) => {
+    const data = await request.file();
+    if (!data) {
+      reply.status(400).send({ error: 'No file uploaded' });
+      return;
+    }
+
+    const buffer = await data.toBuffer();
+    const result = await importService.importFromBuffer(buffer);
+    reply.status(result.success ? 200 : 400).send(result);
+  });
+
   // Config (public, partial)
   fastify.get('/api/config', async () => {
     const config = configManager.get();
@@ -456,31 +567,157 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
       return;
     }
 
-    const { password, scopes } = body;
-    const config = configManager.get();
+    const { email, password, scopes } = body;
+    const authService = fastify.authService;
 
-    // Simple password check (for MVP)
-    // In production, use proper user management
-    if (config.auth.type === 'token' && config.auth.token) {
-      if (password !== config.auth.token) {
-        sendHttpError(request, reply, createUnauthorizedError('Invalid credentials'), {
-          code: StandardErrorCode.Unauthorized,
-          message: 'Invalid credentials',
-          statusCode: 401,
-        });
-        return;
+    // Backward compatibility: if no email provided, fall back to config master password
+    if (!email) {
+      const config = configManager.get();
+      if (config.auth.type === 'token' && config.auth.token) {
+        if (password !== config.auth.token) {
+          sendHttpError(request, reply, createUnauthorizedError('Invalid credentials'), {
+            code: StandardErrorCode.Unauthorized,
+            message: 'Invalid credentials',
+            statusCode: 401,
+          });
+          return;
+        }
       }
+      const result = tokenManager.createToken('default', 'web-client', {
+        scopes: scopes?.length ? scopes : [ADMIN_SCOPE],
+      });
+      return {
+        token: result.token,
+        expiresAt: result.expiresAt.toISOString(),
+        scopes: result.scopes,
+      };
     }
 
-    // Generate token
-    const result = tokenManager.createToken('default', 'web-client', {
-      scopes: scopes?.length ? scopes : [ADMIN_SCOPE],
-    });
-    
+    // New user-based login
+    if (!password) {
+      sendBadRequestError(request, reply, 'Password required');
+      return;
+    }
+
+    const result = await authService.login(email, password, 'web-client');
+    if (!result) {
+      sendHttpError(request, reply, createUnauthorizedError('Invalid credentials'), {
+        code: StandardErrorCode.Unauthorized,
+        message: 'Invalid credentials',
+        statusCode: 401,
+      });
+      return;
+    }
+
     return {
       token: result.token,
       expiresAt: result.expiresAt.toISOString(),
+      user: { ...result.user, scopes: result.scopes },
       scopes: result.scopes,
+    };
+  });
+
+  fastify.post('/api/auth/logout', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const token = request.headers.authorization?.split(' ')[1];
+    if (token) {
+      await fastify.authService.logout(token);
+    }
+    reply.status(204).send();
+  });
+
+  fastify.get('/api/auth/me', { preHandler: [authMiddleware] }, async (request) => {
+    const token = request.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return { user: null };
+    }
+    const user = await fastify.authService.getCurrentUser(token);
+    if (!user) {
+      return { user: null };
+    }
+    // Attach scopes from role
+    let scopes: string[] = [];
+    if (user.roleId) {
+      const role = await fastify.roleService.getRole(user.roleId);
+      if (role) {
+        scopes = role.scopes;
+      }
+    }
+    return { user: { ...user, scopes } };
+  });
+
+  fastify.get('/api/auth/providers', async () => {
+    const config = configManager.get();
+    const methods = fastify.ssoService.getAuthMethods(config);
+    return methods;
+  });
+
+  fastify.get('/api/auth/oauth/:provider', async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid provider id');
+    if (!params) return;
+
+    const config = configManager.get();
+    const providerConfig = config.auth.oauth?.providers.find((p) => p.id === params.id && p.enabled);
+    if (!providerConfig) {
+      sendNotFoundError(request, reply, 'OAuth provider not found');
+      return;
+    }
+
+    const authUrl = await fastify.oauthService.getAuthUrl(providerConfig);
+    return { authUrl };
+  });
+
+  fastify.get('/api/auth/oauth/callback', async (request, reply) => {
+    const query = request.query as { code?: string; state?: string; provider?: string };
+    if (!query.code || !query.state || !query.provider) {
+      sendBadRequestError(request, reply, 'Missing code, state or provider');
+      return;
+    }
+
+    const config = configManager.get();
+    const providerConfig = config.auth.oauth?.providers.find((p) => p.id === query.provider && p.enabled);
+    if (!providerConfig) {
+      sendNotFoundError(request, reply, 'OAuth provider not found');
+      return;
+    }
+
+    const result = await fastify.oauthService.handleCallback(providerConfig, query.code, query.state);
+    if (!result) {
+      sendUnauthorizedError(request, reply, 'OAuth authentication failed');
+      return;
+    }
+
+    return {
+      token: result.token,
+      user: result.user,
+      isNewUser: result.isNewUser,
+    };
+  });
+
+  fastify.post('/api/auth/ldap', async (request, reply) => {
+    const body = parseRequestInput(
+      z.object({ username: z.string().min(1), password: z.string().min(1) }),
+      request.body,
+      request,
+      reply,
+      'Invalid request'
+    );
+    if (!body) return;
+
+    const config = configManager.get();
+    if (!config.auth.ldap?.enabled) {
+      sendBadRequestError(request, reply, 'LDAP authentication not enabled');
+      return;
+    }
+
+    const result = await fastify.ldapService.authenticate(body.username, body.password, config.auth.ldap);
+    if (!result) {
+      sendUnauthorizedError(request, reply, 'LDAP authentication failed');
+      return;
+    }
+
+    return {
+      token: result.token,
+      user: result.user,
     };
   });
 
@@ -529,6 +766,12 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
       return;
     }
 
+    // Ownership check: non-admin users can only access their own sessions
+    if (!isAdmin(request) && session.userId && session.userId !== request.user?.userId) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Access denied' });
+      return;
+    }
+
     return session;
   });
 
@@ -537,6 +780,16 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
     if (!params) {
       return;
     }
+
+    // Ownership check
+    if (!isAdmin(request)) {
+      const session = await sessionManager.getSession(params.id);
+      if (session?.userId && session.userId !== request.user?.userId) {
+        reply.status(403).send({ error: 'Forbidden', message: 'Access denied' });
+        return;
+      }
+    }
+
     await sessionManager.deleteSession(params.id);
     reply.status(204).send();
   });
@@ -616,10 +869,6 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   // Workflows
-  fastify.get('/api/workflows', async () => {
-    return { workflows: listWorkflowTemplates() };
-  });
-
   fastify.post('/api/workflows/run', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
     const body = parseRequestInput(RunWorkflowSchema, request.body, request, reply, 'Invalid request');
     if (!body) {
@@ -925,6 +1174,57 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   // Channel Webhooks - Dynamic webhook endpoints
+  fastify.get('/api/webhooks/:adapterId', async (request, reply) => {
+    const params = parseRequestInput(
+      AdapterIdParamSchema,
+      request.params,
+      request,
+      reply,
+      'Invalid adapter id'
+    );
+    if (!params) {
+      return;
+    }
+    const { adapterId } = params;
+
+    const registry = getChannelRegistry();
+    const adapter = registry.get(adapterId);
+
+    if (!adapter) {
+      sendNotFoundError(request, reply, 'Webhook adapter not found', { adapterId });
+      return;
+    }
+
+    if (!isWebhookCapableAdapter(adapter)) {
+      sendBadRequestError(request, reply, 'Invalid adapter type', { adapterId });
+      return;
+    }
+
+    if (!adapter.verifyWebhookUrl) {
+      sendBadRequestError(request, reply, 'Adapter does not support URL verification', { adapterId });
+      return;
+    }
+
+    try {
+      const result = await adapter.verifyWebhookUrl(request.query as Record<string, string | string[] | undefined>);
+
+      if (result.kind === 'success') {
+        reply.status(result.statusCode ?? 200).send(result.body ?? { success: true });
+        return;
+      }
+
+      reply.status(result.statusCode ?? 400).send(result.body ?? { error: 'Verification failed' });
+    } catch (error) {
+      sendHttpError(request, reply, error, {
+        code: StandardErrorCode.UpstreamError,
+        message: 'Webhook URL verification failed',
+        statusCode: 400,
+        preserveMessage: true,
+        details: { adapterId },
+      });
+    }
+  });
+
   fastify.post('/api/webhooks/:adapterId', async (request, reply) => {
     const params = parseRequestInput(
       AdapterIdParamSchema,
@@ -979,6 +1279,444 @@ export async function setupHttpRoutes(fastify: FastifyInstance): Promise<void> {
         details: { adapterId },
       });
     }
+  });
+
+  // File Upload
+  fastify.post('/api/upload', { preHandler: [authMiddleware, requireScopes([Scope.MessagesWrite])] }, async (request, reply) => {
+    try {
+      const data = await request.file();
+      if (!data) {
+        sendBadRequestError(request, reply, 'No file provided');
+        return;
+      }
+
+      const buffer = await data.toBuffer();
+      const validation = uploadService.validateFile(data.mimetype, buffer.length);
+      if (!validation.valid) {
+        sendBadRequestError(request, reply, validation.error || 'Invalid file');
+        return;
+      }
+
+      const result = await uploadService.saveFile(buffer, data.filename, data.mimetype);
+      reply.status(201).send(result);
+    } catch (error) {
+      sendInvalidRequestError(request, reply, error, 'Failed to upload file');
+    }
+  });
+
+  fastify.get('/api/uploads/:fileId', async (request, reply) => {
+    const params = parseRequestInput(
+      z.object({ fileId: z.string().min(1) }),
+      request.params,
+      request,
+      reply,
+      'Invalid file id'
+    );
+    if (!params) {
+      return;
+    }
+
+    const file = await uploadService.getFile(params.fileId);
+    if (!file) {
+      sendNotFoundError(request, reply, 'File not found', { fileId: params.fileId });
+      return;
+    }
+
+    reply.header('Content-Type', file.mimeType);
+    reply.header('Content-Disposition', `inline; filename="${encodeURIComponent(file.originalName)}"`);
+    return reply.sendFile(path.basename(file.path));
+  });
+
+  // === User Management API ===
+
+  fastify.get('/api/users', { preHandler: [authMiddleware, requireScopes([Scope.ConfigRead])] }, async (request) => {
+    // Only admin can list all users
+    if (!isAdmin(request)) {
+      // Non-admin can only see themselves
+      const user = await fastify.userService.getUser(request.user!.userId);
+      return { users: user ? [user] : [] };
+    }
+    const users = await fastify.userService.listUsers();
+    return { users };
+  });
+
+  fastify.post('/api/users', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const body = parseRequestInput(CreateUserSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    const user = await fastify.userService.createUser(body);
+    reply.status(201).send(user);
+  });
+
+  fastify.get('/api/users/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid user id');
+    if (!params) return;
+
+    // Non-admin can only view themselves
+    if (!isAdmin(request) && params.id !== request.user?.userId) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Access denied' });
+      return;
+    }
+
+    const user = await fastify.userService.getUser(params.id);
+    if (!user) {
+      sendNotFoundError(request, reply, 'User not found');
+      return;
+    }
+    return user;
+  });
+
+  fastify.put('/api/users/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid user id');
+    if (!params) return;
+
+    // Non-admin can only update themselves, and cannot change role
+    if (!isAdmin(request)) {
+      if (params.id !== request.user?.userId) {
+        reply.status(403).send({ error: 'Forbidden', message: 'Access denied' });
+        return;
+      }
+      const body = parseRequestInput(UpdateUserSchema, request.body, request, reply, 'Invalid request');
+      if (!body) return;
+      // Strip roleId for non-admin self-update
+      const { roleId, ...safeUpdate } = body;
+      await fastify.userService.updateUser(params.id, safeUpdate);
+    } else {
+      const body = parseRequestInput(UpdateUserSchema, request.body, request, reply, 'Invalid request');
+      if (!body) return;
+      await fastify.userService.updateUser(params.id, body);
+    }
+
+    const user = await fastify.userService.getUser(params.id);
+    return user;
+  });
+
+  fastify.delete('/api/users/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid user id');
+    if (!params) return;
+
+    await fastify.userService.deleteUser(params.id);
+    reply.status(204).send();
+  });
+
+  fastify.put('/api/users/me/password', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const body = parseRequestInput(UpdatePasswordSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    const success = await fastify.authService.changePassword(
+      request.user!.userId,
+      body.oldPassword,
+      body.newPassword
+    );
+
+    if (!success) {
+      sendUnauthorizedError(request, reply, 'Invalid old password');
+      return;
+    }
+
+    return { success: true };
+  });
+
+  // === Role Management API ===
+
+  fastify.get('/api/roles', { preHandler: [authMiddleware] }, async () => {
+    const roles = await fastify.roleService.listRoles();
+    return { roles };
+  });
+
+  fastify.post('/api/roles', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const body = parseRequestInput(CreateRoleSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    const role = await fastify.roleService.createRole(body);
+    reply.status(201).send(role);
+  });
+
+  fastify.get('/api/roles/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid role id');
+    if (!params) return;
+
+    const role = await fastify.roleService.getRole(params.id);
+    if (!role) {
+      sendNotFoundError(request, reply, 'Role not found');
+      return;
+    }
+    return role;
+  });
+
+  fastify.put('/api/roles/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid role id');
+    if (!params) return;
+
+    const body = parseRequestInput(UpdateRoleSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    await fastify.roleService.updateRole(params.id, body);
+    const role = await fastify.roleService.getRole(params.id);
+    return role;
+  });
+
+  fastify.delete('/api/roles/:id', { preHandler: [authMiddleware, requireScopes([Scope.ConfigWrite])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid role id');
+    if (!params) return;
+
+    try {
+      await fastify.roleService.deleteRole(params.id);
+      reply.status(204).send();
+    } catch (error) {
+      sendBadRequestError(request, reply, error instanceof Error ? error.message : 'Cannot delete role');
+    }
+  });
+
+  // === Audit Logs API ===
+
+  fastify.get('/api/audit/logs', { preHandler: [authMiddleware, requireScopes([Scope.ConfigRead])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const query = parseRequestInput(AuditQuerySchema, request.query, request, reply, 'Invalid query');
+    if (!query) return;
+
+    const result = await fastify.auditService.query({
+      action: query.action,
+      resourceType: query.resourceType,
+      userId: query.userId,
+      from: query.from ? new Date(query.from) : undefined,
+      to: query.to ? new Date(query.to) : undefined,
+      limit: query.limit,
+      offset: query.offset,
+    });
+
+    return result;
+  });
+
+  fastify.get('/api/audit/stats', { preHandler: [authMiddleware, requireScopes([Scope.ConfigRead])] }, async (request, reply) => {
+    if (!isAdmin(request)) {
+      reply.status(403).send({ error: 'Forbidden', message: 'Admin required' });
+      return;
+    }
+    const days = Number((request.query as { days?: string }).days) || 7;
+    const stats = await fastify.auditService.getStats(days);
+    return stats;
+  });
+
+  // === Workflow Management API ===
+
+  fastify.get('/api/workflows', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRead])] }, async () => {
+    const workflows = await fastify.workflowService.listWorkflows();
+    return { workflows };
+  });
+
+  fastify.post('/api/workflows', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
+    const body = parseRequestInput(CreateWorkflowSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    const workflow = await fastify.workflowService.createWorkflow({
+      name: body.name,
+      description: body.description,
+      definition: body.definition as unknown as import('../tools/orchestrator.js').ExecutionPlan,
+      ownerId: request.user?.userId,
+    });
+    reply.status(201).send(workflow);
+  });
+
+  fastify.get('/api/workflows/:id', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRead])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid workflow id');
+    if (!params) return;
+
+    const workflow = await fastify.workflowService.getWorkflow(params.id);
+    if (!workflow) {
+      // Check builtin templates
+      if (params.id.startsWith('builtin:')) {
+        const templateName = params.id.slice('builtin:'.length);
+        const template = getWorkflowTemplate(templateName);
+        if (template) {
+          return {
+            id: params.id,
+            name: template.name,
+            description: template.description,
+            definition: {},
+            isBuiltin: true,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+          };
+        }
+      }
+      sendNotFoundError(request, reply, 'Workflow not found');
+      return;
+    }
+    return workflow;
+  });
+
+  fastify.put('/api/workflows/:id', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid workflow id');
+    if (!params) return;
+
+    const body = parseRequestInput(UpdateWorkflowSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    await fastify.workflowService.updateWorkflow(params.id, {
+      name: body.name,
+      description: body.description,
+      definition: body.definition as unknown as import('../tools/orchestrator.js').ExecutionPlan,
+    });
+
+    const workflow = await fastify.workflowService.getWorkflow(params.id);
+    return workflow;
+  });
+
+  fastify.delete('/api/workflows/:id', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid workflow id');
+    if (!params) return;
+
+    await fastify.workflowService.deleteWorkflow(params.id);
+    reply.status(204).send();
+  });
+
+  fastify.post('/api/workflows/:id/run', { preHandler: [authMiddleware, requireScopes([Scope.WorkflowRun])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid workflow id');
+    if (!params) return;
+
+    const body = parseRequestInput(RunWorkflowSchema, request.body, request, reply, 'Invalid request');
+    if (!body) return;
+
+    try {
+      const config = configManager.get();
+      let sessionId = body.sessionId;
+      if (!sessionId) {
+        const session = await sessionManager.createSession({
+          title: `工作流: ${params.id}`,
+          modelId: resolveDefaultModel(config),
+          userId: request.user?.userId,
+        });
+        sessionId = session.id;
+      }
+
+      const result = await fastify.workflowService.executeWorkflow(
+        params.id,
+        body.params ?? {},
+        { sessionId, requestId: request.id }
+      );
+
+      return {
+        sessionId,
+        success: result.success,
+        executionTime: result.executionTime,
+        completedNodes: result.completedNodes,
+        failedNodes: result.failedNodes,
+      };
+    } catch (error) {
+      sendInvalidRequestError(request, reply, error, 'Workflow execution failed');
+    }
+  });
+
+  // === Plugin Market API ===
+
+  fastify.get('/api/market/plugins', { preHandler: [authMiddleware, requireScopes([Scope.PluginsRead])] }, async (request) => {
+    const registryUrl = (request.query as { url?: string }).url;
+    const plugins = await fastify.pluginMarketService.listMarketPlugins(registryUrl);
+    return { plugins };
+  });
+
+  fastify.get('/api/market/plugins/:id', { preHandler: [authMiddleware, requireScopes([Scope.PluginsRead])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid plugin id');
+    if (!params) return;
+    const registryUrl = (request.query as { url?: string }).url;
+    const plugin = await fastify.pluginMarketService.getMarketPlugin(params.id, registryUrl);
+    if (!plugin) {
+      sendNotFoundError(request, reply, 'Plugin not found in registry');
+      return;
+    }
+    return plugin;
+  });
+
+  fastify.get('/api/plugins', { preHandler: [authMiddleware, requireScopes([Scope.PluginsRead])] }, async () => {
+    const plugins = fastify.pluginMarketService.listInstalled();
+    return { plugins };
+  });
+
+  fastify.post('/api/plugins/install', { preHandler: [authMiddleware, requireScopes([Scope.PluginsWrite])] }, async (request, reply) => {
+    const body = request.body as { id?: string; url?: string };
+    if (!body.id || typeof body.id !== 'string') {
+      reply.status(400).send({ error: 'Bad Request', message: 'Plugin id is required' });
+      return;
+    }
+    const result = await fastify.pluginMarketService.install(body.id, body.url);
+    if (!result) {
+      reply.status(400).send({ error: 'Bad Request', message: 'Failed to install plugin' });
+      return;
+    }
+    return result;
+  });
+
+  fastify.post('/api/plugins/uninstall', { preHandler: [authMiddleware, requireScopes([Scope.PluginsWrite])] }, async (request, reply) => {
+    const body = request.body as { id?: string };
+    if (!body.id || typeof body.id !== 'string') {
+      reply.status(400).send({ error: 'Bad Request', message: 'Plugin id is required' });
+      return;
+    }
+    const success = await fastify.pluginMarketService.uninstall(body.id);
+    if (!success) {
+      reply.status(400).send({ error: 'Bad Request', message: 'Failed to uninstall plugin' });
+      return;
+    }
+    // Also unload from plugin manager if loaded
+    await fastify.pluginManager.unloadPlugin(body.id);
+    return { success: true };
+  });
+
+  fastify.post('/api/plugins/update', { preHandler: [authMiddleware, requireScopes([Scope.PluginsWrite])] }, async (request, reply) => {
+    const body = request.body as { id?: string; url?: string };
+    if (!body.id || typeof body.id !== 'string') {
+      reply.status(400).send({ error: 'Bad Request', message: 'Plugin id is required' });
+      return;
+    }
+    const result = await fastify.pluginMarketService.update(body.id, body.url);
+    if (!result) {
+      reply.status(400).send({ error: 'Bad Request', message: 'Failed to update plugin' });
+      return;
+    }
+    return result;
+  });
+
+  fastify.get('/api/plugins/updates', { preHandler: [authMiddleware, requireScopes([Scope.PluginsRead])] }, async (request) => {
+    const registryUrl = (request.query as { url?: string }).url;
+    const updates = await fastify.pluginMarketService.checkUpdates(registryUrl);
+    return { updates };
+  });
+
+  fastify.post('/api/plugins/:id/enable', { preHandler: [authMiddleware, requireScopes([Scope.PluginsWrite])] }, async (request, reply) => {
+    const params = parseRequestInput(IdParamSchema, request.params, request, reply, 'Invalid plugin id');
+    if (!params) return;
+    const body = request.body as { enabled?: boolean };
+    const enabled = body.enabled !== false;
+    const success = fastify.pluginMarketService.setEnabled(params.id, enabled);
+    if (!success) {
+      sendNotFoundError(request, reply, 'Plugin not found');
+      return;
+    }
+    return { success: true, enabled };
   });
 
   logger.debug('HTTP routes registered');

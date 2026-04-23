@@ -135,7 +135,7 @@ export const systemDiagnosticsWorkflow: WorkflowTemplate = {
         toolCall: {
           id: 'list-procs-call',
           name: 'run_command',
-          arguments: { command: 'ps aux --sort=-%mem | head -20' },
+          arguments: { command: 'ps', args: ['-eo', 'pid,ppid,cmd,%mem,%cpu', '--sort=-%mem'], maxOutputLines: 20 },
         },
         dependencies: [],
       },

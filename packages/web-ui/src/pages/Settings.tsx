@@ -14,6 +14,18 @@ interface ModelConfig {
   enabled: boolean;
 }
 
+interface ProviderInfo {
+  providerId: string;
+  providerName: string;
+  models: string[];
+  defaultModel: string;
+  supportsStreaming: boolean;
+  supportsTools: boolean;
+  supportsVision: boolean;
+  supportsJsonMode: boolean;
+  registered: boolean;
+}
+
 interface ChannelConfig {
   id: string;
   name: string;
@@ -22,22 +34,16 @@ interface ChannelConfig {
   config: Record<string, unknown>;
 }
 
-type ChannelTypeValue = 'webhook' | 'lark' | 'dingtalk';
-
-interface ChannelFormValues {
-  id: string;
+interface ChannelContractField {
   name: string;
-  type: ChannelTypeValue;
-  enabled: boolean;
-  secret?: string;
-  verificationToken?: string;
-  appId?: string;
-  appSecret?: string;
-  botWebhookUrl?: string;
-  botWebhookSecret?: string;
-  dingtalkVerificationToken?: string;
-  dingtalkWebhookUrl?: string;
-  dingtalkSecret?: string;
+  required: boolean;
+  description: string;
+}
+
+interface ChannelContract {
+  type: string;
+  displayName: string;
+  configFields: ChannelContractField[];
 }
 
 function SettingsPage() {
@@ -49,28 +55,64 @@ function SettingsPage() {
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [channels, setChannels] = useState<ChannelConfig[]>([]);
   const [systemConfig, setSystemConfig] = useState({ port: 31987, host: '127.0.0.1' });
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [channelContracts, setChannelContracts] = useState<ChannelContract[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingModel, setEditingModel] = useState<string | null>(null);
   const [editingChannel, setEditingChannel] = useState<string | null>(null);
-  const channelType = (Form.useWatch('type', channelForm) as ChannelTypeValue | undefined) || 'webhook';
+  const channelType = (Form.useWatch('type', channelForm) as string | undefined) || 'webhook';
+  const selectedProvider = Form.useWatch('provider', modelForm) as string | undefined;
 
   // Load configuration on mount
   useEffect(() => {
     fetchConfig();
   }, []);
 
+  const isOllama = selectedProvider === 'ollama';
+  const selectedProviderInfo = providers.find(p => p.providerId === selectedProvider);
+  const providerModelOptions = selectedProviderInfo?.models || [];
+
+  // Auto-fill baseUrl and clear fields when provider changes
+  useEffect(() => {
+    if (!editingModel && selectedProvider) {
+      const isOllamaProvider = selectedProvider === 'ollama';
+      modelForm.setFieldsValue({
+        id: undefined,
+        name: undefined,
+        apiKey: undefined,
+        baseUrl: isOllamaProvider ? 'http://localhost:11435' : undefined,
+      });
+    }
+  }, [selectedProvider, editingModel, modelForm]);
+
+  // Auto-fill display name when ollama model is selected
+  const selectedModelId = Form.useWatch('id', modelForm) as string | undefined;
+  useEffect(() => {
+    if (isOllama && selectedModelId && !editingModel) {
+      modelForm.setFieldsValue({
+        name: selectedModelId,
+      });
+    }
+  }, [selectedModelId, isOllama, editingModel, modelForm]);
+
   const fetchConfig = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/config/full', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-        }
-      });
+      const [configRes, providersRes, contractsRes] = await Promise.all([
+        fetch('/api/config/full', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+        }),
+        fetch('/api/models/capabilities', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+        }),
+        fetch('/api/channels/contracts', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` }
+        }),
+      ]);
       
-      if (response.ok) {
-        const data = await response.json();
+      if (configRes.ok) {
+        const data = await configRes.json();
         const config = data.config;
         
         // Set form values
@@ -87,8 +129,18 @@ function SettingsPage() {
         if (config.channels) {
           setChannels(config.channels);
         }
-      } else if (response.status === 401) {
+      } else if (configRes.status === 401) {
         message.error('请先登录');
+      }
+
+      if (providersRes.ok) {
+        const data = await providersRes.json();
+        setProviders(data.providers || []);
+      }
+
+      if (contractsRes.ok) {
+        const data = await contractsRes.json();
+        setChannelContracts(data.contracts || []);
       }
     } catch (_error) {
       console.error('Failed to load config:', _error);
@@ -137,7 +189,7 @@ function SettingsPage() {
     }
   };
 
-  const handleAddModel = async (values: { id: string; name: string; provider: string; apiKey: string; baseUrl?: string }) => {
+  const handleAddModel = async (values: { id: string; name: string; provider: string; apiKey?: string; baseUrl?: string }) => {
     setSaving(true);
     try {
       const url = editingModel 
@@ -249,39 +301,33 @@ function SettingsPage() {
     }
   };
 
-  const handleAddChannel = async (values: ChannelFormValues) => {
+  const handleAddChannel = async (values: Record<string, unknown>) => {
     setSaving(true);
     try {
       const url = editingChannel 
         ? `/api/config/channels/${editingChannel}`
         : '/api/config/channels';
 
-      const selectedType: ChannelTypeValue = values.type || 'webhook';
-      const channelSpecificConfig =
-        selectedType === 'lark'
-          ? compactStringConfig({
-              verificationToken: values.verificationToken,
-              appId: values.appId,
-              appSecret: values.appSecret,
-              botWebhookUrl: values.botWebhookUrl,
-              botWebhookSecret: values.botWebhookSecret,
-            })
-          : selectedType === 'dingtalk'
-            ? compactStringConfig({
-                verificationToken: values.dingtalkVerificationToken,
-                outgoingWebhookUrl: values.dingtalkWebhookUrl,
-                outgoingSecret: values.dingtalkSecret,
-              })
-            : compactStringConfig({
-                secret: values.secret,
-              });
+      const selectedType = (values.type as string) || 'webhook';
+      const contract = channelContracts.find(c => c.type === selectedType);
+      
+      // Build config dynamically from contract configFields
+      const config: Record<string, string> = {};
+      if (contract) {
+        for (const field of contract.configFields) {
+          const value = values[field.name];
+          if (typeof value === 'string' && value.trim().length > 0) {
+            config[field.name] = value.trim();
+          }
+        }
+      }
 
       const body = {
         id: values.id,
         name: values.name,
         type: selectedType,
         enabled: values.enabled,
-        config: channelSpecificConfig,
+        config,
       };
       
       const response = await fetch(url, {
@@ -332,25 +378,21 @@ function SettingsPage() {
   };
 
   const handleEditChannel = (channel: ChannelConfig) => {
-    const selectedType: ChannelTypeValue =
-      channel.type === 'lark' ? 'lark' : channel.type === 'dingtalk' ? 'dingtalk' : 'webhook';
     setEditingChannel(channel.id);
-    channelForm.setFieldsValue({
+    const formValues: Record<string, unknown> = {
       id: channel.id,
       name: channel.name,
-      type: selectedType,
-      secret: (channel.config?.secret as string) || '',
-      verificationToken: (channel.config?.verificationToken as string) || '',
-      appId: (channel.config?.appId as string) || '',
-      appSecret: (channel.config?.appSecret as string) || '',
-      botWebhookUrl: (channel.config?.botWebhookUrl as string) || '',
-      botWebhookSecret: (channel.config?.botWebhookSecret as string) || '',
-      dingtalkVerificationToken: (channel.config?.verificationToken as string) || '',
-      dingtalkWebhookUrl:
-        (channel.config?.outgoingWebhookUrl as string) || (channel.config?.webhookUrl as string) || '',
-      dingtalkSecret: (channel.config?.outgoingSecret as string) || (channel.config?.secret as string) || '',
+      type: channel.type,
       enabled: channel.enabled,
-    });
+    };
+    // Map config fields dynamically
+    const contract = channelContracts.find(c => c.type === channel.type);
+    if (contract) {
+      for (const field of contract.configFields) {
+        formValues[field.name] = (channel.config?.[field.name] as string) || '';
+      }
+    }
+    channelForm.setFieldsValue(formValues);
   };
 
   const handleToggleChannel = async (channel: ChannelConfig) => {
@@ -414,9 +456,10 @@ function SettingsPage() {
   const channelColumns = [
     { title: 'ID', dataIndex: 'id', key: 'id' },
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '类型', dataIndex: 'type', key: 'type', render: (type: string) => (
-      <Tag>{type === 'lark' ? '飞书' : type === 'dingtalk' ? '钉钉' : 'Webhook'}</Tag>
-    )},
+    { title: '类型', dataIndex: 'type', key: 'type', render: (type: string) => {
+      const contract = channelContracts.find(c => c.type === type);
+      return <Tag>{contract?.displayName || type}</Tag>;
+    }},
     { title: '状态', dataIndex: 'enabled', key: 'enabled', render: (enabled: boolean, record: ChannelConfig) => (
       <Switch checked={enabled} onChange={() => handleToggleChannel(record)} />
     )},
@@ -473,26 +516,59 @@ function SettingsPage() {
                 rules={[{ required: true, message: '请选择提供者' }]}
               >
                 <Select placeholder="选择模型提供者">
-                  <Option value="deepseek">DeepSeek</Option>
-                  <Option value="kimi">Kimi (Moonshot)</Option>
-                  <Option value="openai">OpenAI</Option>
+                  {providers.map(p => (
+                    <Option key={p.providerId} value={p.providerId}>
+                      {p.providerName}
+                    </Option>
+                  ))}
                 </Select>
               </Form.Item>
 
-              <Form.Item
-                label="API Key"
-                name="apiKey"
-                rules={[{ required: true, message: '请输入 API Key' }]}
-              >
-                <Input.Password placeholder="sk-..." />
-              </Form.Item>
-
-              <Form.Item
-                label="Base URL (可选)"
-                name="baseUrl"
-              >
-                <Input placeholder="https://api.example.com" />
-              </Form.Item>
+              {isOllama ? (
+                <>
+                  <Form.Item
+                    label="本地模型"
+                    name="id"
+                    rules={[{ required: true, message: '请选择本地模型' }]}
+                  >
+                    <Select placeholder="选择已部署的本地模型" disabled={!!editingModel}>
+                      {providerModelOptions.map(m => (
+                        <Option key={m} value={m}>{m}</Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                  <Form.Item
+                    label="Base URL (可选)"
+                    name="baseUrl"
+                    initialValue="http://localhost:11435"
+                  >
+                    <Input placeholder="http://localhost:11435" />
+                  </Form.Item>
+                </>
+              ) : (
+                <>
+                  <Form.Item
+                    label="模型 ID"
+                    name="id"
+                    rules={[{ required: true, message: '请输入模型 ID' }]}
+                  >
+                    <Input placeholder="例如：deepseek-chat" disabled={!!editingModel} />
+                  </Form.Item>
+                  <Form.Item
+                    label="API Key"
+                    name="apiKey"
+                    rules={[{ required: true, message: '请输入 API Key' }]}
+                  >
+                    <Input.Password placeholder="sk-..." />
+                  </Form.Item>
+                  <Form.Item
+                    label="Base URL (可选)"
+                    name="baseUrl"
+                  >
+                    <Input placeholder="https://api.example.com" />
+                  </Form.Item>
+                </>
+              )}
 
               <Form.Item>
                 <Space>
@@ -527,9 +603,9 @@ function SettingsPage() {
                 initialValue="webhook"
               >
                 <Select disabled={!!editingChannel}>
-                  <Option value="webhook">Webhook</Option>
-                  <Option value="lark">飞书</Option>
-                  <Option value="dingtalk">钉钉</Option>
+                  {channelContracts.map(c => (
+                    <Option key={c.type} value={c.type}>{c.displayName}</Option>
+                  ))}
                 </Select>
               </Form.Item>
 
@@ -549,48 +625,20 @@ function SettingsPage() {
                 <Input placeholder="例如：测试 Webhook" />
               </Form.Item>
 
-              {channelType === 'webhook' && (
+              {channelContracts.find(c => c.type === channelType)?.configFields.map(field => (
                 <Form.Item
-                  label="Secret (可选)"
-                  name="secret"
+                  key={field.name}
+                  label={`${field.name}${field.required ? '' : ' (可选)'}`}
+                  name={field.name}
+                  rules={field.required ? [{ required: true, message: `请输入 ${field.name}` }] : undefined}
                 >
-                  <Input.Password placeholder="用于验证 Webhook 签名" />
+                  {field.name.toLowerCase().includes('password') || field.name.toLowerCase().includes('secret') ? (
+                    <Input.Password placeholder={field.description} />
+                  ) : (
+                    <Input placeholder={field.description} />
+                  )}
                 </Form.Item>
-              )}
-
-              {channelType === 'lark' && (
-                <>
-                  <Form.Item label="Verification Token (可选)" name="verificationToken">
-                    <Input placeholder="用于飞书 URL 验证" />
-                  </Form.Item>
-                  <Form.Item label="App ID (可选)" name="appId">
-                    <Input placeholder="cli_xxx（用于通过飞书开放接口回消息）" />
-                  </Form.Item>
-                  <Form.Item label="App Secret (可选)" name="appSecret">
-                    <Input.Password placeholder="用于获取 tenant_access_token" />
-                  </Form.Item>
-                  <Form.Item label="Bot Webhook URL (可选)" name="botWebhookUrl">
-                    <Input placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
-                  </Form.Item>
-                  <Form.Item label="Bot Webhook Secret (可选)" name="botWebhookSecret">
-                    <Input.Password placeholder="飞书自定义机器人签名密钥" />
-                  </Form.Item>
-                </>
-              )}
-
-              {channelType === 'dingtalk' && (
-                <>
-                  <Form.Item label="Verification Token (可选)" name="dingtalkVerificationToken">
-                    <Input placeholder="用于钉钉回调验证（如启用）" />
-                  </Form.Item>
-                  <Form.Item label="Outgoing Webhook URL (可选)" name="dingtalkWebhookUrl">
-                    <Input placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
-                  </Form.Item>
-                  <Form.Item label="Outgoing Secret (可选)" name="dingtalkSecret">
-                    <Input.Password placeholder="钉钉机器人加签密钥 SEC..." />
-                  </Form.Item>
-                </>
-              )}
+              ))}
 
               <Form.Item
                 label="启用"

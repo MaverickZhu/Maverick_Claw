@@ -1,48 +1,48 @@
 {
-  "name": "maverick-claw",
-  "version": "0.1.0",
-  "description": "面向中国用户的本地/自托管多通道 AI 助手网关",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "turbo run lint",
-    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
-    "typecheck": "turbo run typecheck",
-    "benchmark": "pnpm --filter @maverick-claw/core benchmark -- --output-dir ../../benchmark-results",
-    "benchmark:compare": "pnpm --filter @maverick-claw/core benchmark:compare -- --output-dir ../../benchmark-results",
-    "clean": "turbo run clean && rm -rf node_modules",
-    "changeset": "changeset",
-    "version-packages": "changeset version",
-    "release": "turbo run build && changeset publish",
-    "docker:up": "docker compose up -d",
-    "docker:up:all": "docker compose --profile tools --profile monitoring up -d",
-    "docker:up:monitoring": "docker compose --profile monitoring up -d",
-    "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f",
-    "docker:status": "docker compose ps",
-    "docker:clean": "docker compose down -v",
-    "prepare": "node .husky/install.mjs"
-  },
-  "devDependencies": {
-    "@changesets/cli": "^2.27.1",
-    "@eslint/js": "^10.0.1",
-    "@typescript-eslint/eslint-plugin": "^8.58.2",
-    "@typescript-eslint/parser": "^8.58.2",
-    "eslint": "^10.2.0",
-    "husky": "^9.1.7",
-    "prettier": "^3.2.5",
-    "turbo": "^2.0.0",
-    "typescript": "^5.4.5"
-  },
-  "packageManager": "pnpm@9.0.0",
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "workspaces": [
-    "packages/*",
-    "plugins/*"
-  ]
+    "name":  "maverick-claw",
+    "version":  "1.0.0",
+    "description":  "闈㈠悜涓浗鐢ㄦ埛鐨勬湰鍦?鑷墭绠″閫氶亾 AI 鍔╂墜缃戝叧",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "dev":  "turbo run dev",
+                    "build":  "turbo run build",
+                    "test":  "turbo run test",
+                    "lint":  "turbo run lint",
+                    "format":  "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+                    "typecheck":  "turbo run typecheck",
+                    "benchmark":  "pnpm --filter @maverick-claw/core benchmark -- --output-dir ../../benchmark-results",
+                    "benchmark:compare":  "pnpm --filter @maverick-claw/core benchmark:compare -- --output-dir ../../benchmark-results",
+                    "clean":  "turbo run clean \u0026\u0026 rm -rf node_modules",
+                    "changeset":  "changeset",
+                    "version-packages":  "changeset version",
+                    "release":  "turbo run build \u0026\u0026 changeset publish",
+                    "docker:up":  "docker compose up -d",
+                    "docker:up:all":  "docker compose --profile tools --profile monitoring up -d",
+                    "docker:up:monitoring":  "docker compose --profile monitoring up -d",
+                    "docker:down":  "docker compose down",
+                    "docker:logs":  "docker compose logs -f",
+                    "docker:status":  "docker compose ps",
+                    "docker:clean":  "docker compose down -v",
+                    "prepare":  "node .husky/install.mjs"
+                },
+    "devDependencies":  {
+                            "@changesets/cli":  "^2.27.1",
+                            "@eslint/js":  "^10.0.1",
+                            "@typescript-eslint/eslint-plugin":  "^8.58.2",
+                            "@typescript-eslint/parser":  "^8.58.2",
+                            "eslint":  "^10.2.0",
+                            "husky":  "^9.1.7",
+                            "prettier":  "^3.2.5",
+                            "turbo":  "^2.0.0",
+                            "typescript":  "^5.4.5"
+                        },
+    "packageManager":  "pnpm@9.0.0",
+    "engines":  {
+                    "node":  "\u003e=20.0.0"
+                },
+    "workspaces":  [
+                       "packages/*",
+                       "plugins/*"
+                   ]
 }

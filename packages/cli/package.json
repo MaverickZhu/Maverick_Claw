@@ -1,40 +1,40 @@
 {
-  "name": "@maverick-claw/cli",
-  "version": "0.1.0",
-  "description": "CLI for Maverick_Claw",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "bin": {
-    "mc": "./dist/cli.js"
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx watch src/cli.ts",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "lint": "eslint src/**/*.ts"
-  },
-  "dependencies": {
-    "@clack/prompts": "^0.7.0",
-    "@maverick-claw/shared": "workspace:*",
-    "@types/json5": "^2.2.0",
-    "axios": "^1.7.2",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "dotenv": "^16.4.5",
-    "figlet": "^1.7.0",
-    "json5": "^2.2.3",
-    "ora": "^8.0.1",
-    "ws": "^8.17.0"
-  },
-  "devDependencies": {
-    "@types/figlet": "^1.5.8",
-    "@types/node": "^20.12.12",
-    "@types/ws": "^8.5.10",
-    "tsx": "^4.11.0",
-    "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
-  }
+    "name":  "@maverick-claw/cli",
+    "version":  "1.0.0",
+    "description":  "CLI for Maverick_Claw",
+    "type":  "module",
+    "main":  "./dist/index.js",
+    "types":  "./dist/index.d.ts",
+    "bin":  {
+                "mc":  "./dist/cli.js"
+            },
+    "scripts":  {
+                    "build":  "tsc",
+                    "dev":  "tsx watch src/cli.ts",
+                    "clean":  "rm -rf dist",
+                    "typecheck":  "tsc --noEmit",
+                    "test":  "vitest run",
+                    "lint":  "eslint src/**/*.ts"
+                },
+    "dependencies":  {
+                         "@clack/prompts":  "^0.7.0",
+                         "@maverick-claw/shared":  "workspace:*",
+                         "@types/json5":  "^2.2.0",
+                         "axios":  "^1.7.2",
+                         "chalk":  "^5.3.0",
+                         "commander":  "^12.1.0",
+                         "dotenv":  "^16.4.5",
+                         "figlet":  "^1.7.0",
+                         "json5":  "^2.2.3",
+                         "ora":  "^8.0.1",
+                         "ws":  "^8.17.0"
+                     },
+    "devDependencies":  {
+                            "@types/figlet":  "^1.5.8",
+                            "@types/node":  "^20.12.12",
+                            "@types/ws":  "^8.5.10",
+                            "tsx":  "^4.11.0",
+                            "typescript":  "^5.4.5",
+                            "vitest":  "^1.6.0"
+                        }
 }

@@ -2,13 +2,15 @@ import { createHmac } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   AdapterWebhookResult,
-  ChannelAdapter,
   ChannelMessage,
   ChannelResponse,
   ChannelType,
   SendMessageOptions,
   WebhookCapableAdapter,
 } from '../types.js';
+import { AbstractChannelAdapter } from './base.js';
+import { createChannelError, createChannelSuccess } from '../types.js';
+import { getString, getNumber, getRecord, readJson } from './utils.js';
 import { logger } from '../../utils/logger.js';
 
 export interface DingTalkAdapterConfig {
@@ -18,34 +20,28 @@ export interface DingTalkAdapterConfig {
   outgoingSecret?: string;
 }
 
-export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
-  id: string;
+export class DingTalkAdapter extends AbstractChannelAdapter implements WebhookCapableAdapter {
   type: ChannelType = 'dingtalk';
-  name: string;
 
   private config: DingTalkAdapterConfig;
-  private messageHandlers: Array<(message: ChannelMessage) => Promise<void> | void> = [];
-  private initialized = false;
-  private started = false;
 
   constructor(id: string, name: string, config: DingTalkAdapterConfig) {
-    this.id = id;
-    this.name = name;
+    super(id, name);
     this.config = { ...config };
   }
 
   async initialize(config: Record<string, unknown>): Promise<void> {
     this.config = {
       ...this.config,
-      webhookPath: this.getString(config.webhookPath) || this.config.webhookPath,
-      verificationToken: this.getString(config.verificationToken) || this.config.verificationToken,
+      webhookPath: getString(config.webhookPath) || this.config.webhookPath,
+      verificationToken: getString(config.verificationToken) || this.config.verificationToken,
       outgoingWebhookUrl:
-        this.getString(config.outgoingWebhookUrl) ||
-        this.getString(config.webhookUrl) ||
+        getString(config.outgoingWebhookUrl) ||
+        getString(config.webhookUrl) ||
         this.config.outgoingWebhookUrl,
       outgoingSecret:
-        this.getString(config.outgoingSecret) ||
-        this.getString(config.secret) ||
+        getString(config.outgoingSecret) ||
+        getString(config.secret) ||
         this.config.outgoingSecret,
     };
 
@@ -54,32 +50,13 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
   }
 
   async start(): Promise<void> {
-    if (!this.initialized) {
-      throw new Error('Adapter not initialized');
-    }
-    this.started = true;
+    await super.start();
     logger.info({ adapterId: this.id }, 'DingTalk adapter started');
   }
 
   async stop(): Promise<void> {
-    this.started = false;
-    this.messageHandlers = [];
+    await super.stop();
     logger.info({ adapterId: this.id }, 'DingTalk adapter stopped');
-  }
-
-  async health(): Promise<boolean> {
-    return this.initialized && this.started;
-  }
-
-  onMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    this.messageHandlers.push(handler);
-  }
-
-  offMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    const index = this.messageHandlers.indexOf(handler);
-    if (index >= 0) {
-      this.messageHandlers.splice(index, 1);
-    }
   }
 
   async processWebhook(payload: unknown, _signature?: string): Promise<AdapterWebhookResult> {
@@ -88,13 +65,7 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       return parsed;
     }
 
-    for (const handler of this.messageHandlers) {
-      try {
-        await handler(parsed.message);
-      } catch (error) {
-        logger.error({ err: error, adapterId: this.id }, 'DingTalk message handler error');
-      }
-    }
+    await this.notifyHandlers(parsed.message);
 
     return parsed;
   }
@@ -130,9 +101,9 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
 
     const raw = payload as Record<string, unknown>;
 
-    const challenge = this.getString(raw.challenge);
+    const challenge = getString(raw.challenge);
     if (challenge) {
-      const token = this.getString(raw.token);
+      const token = getString(raw.token);
       if (this.config.verificationToken && token && token !== this.config.verificationToken) {
         throw new Error('Invalid DingTalk verification token');
       }
@@ -144,25 +115,25 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     }
 
     const userId =
-      this.getString(raw.senderStaffId) ||
-      this.getString(raw.senderId) ||
-      this.getString(raw.userId) ||
-      this.getString(raw.staffId);
+      getString(raw.senderStaffId) ||
+      getString(raw.senderId) ||
+      getString(raw.userId) ||
+      getString(raw.staffId);
     const userName =
-      this.getString(raw.senderNick) ||
-      this.getString(raw.senderName) ||
-      this.getString(raw.userName);
+      getString(raw.senderNick) ||
+      getString(raw.senderName) ||
+      getString(raw.userName);
     const messageId =
-      this.getString(raw.msgId) ||
-      this.getString(raw.messageId) ||
-      this.getString(raw.id) ||
+      getString(raw.msgId) ||
+      getString(raw.messageId) ||
+      getString(raw.id) ||
       uuidv4();
 
-    const textNode = this.getRecord(raw.text);
+    const textNode = getRecord(raw.text);
     const content =
-      this.getString(textNode?.content) ||
-      this.getString(raw.content) ||
-      this.getString(raw.message) ||
+      getString(textNode?.content) ||
+      getString(raw.content) ||
+      getString(raw.message) ||
       '';
     if (!userId || !content) {
       return {
@@ -173,11 +144,11 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     }
 
     const groupId =
-      this.getString(raw.conversationId) ||
-      this.getString(raw.chatId) ||
-      this.getString(raw.groupId);
-    const conversationType = this.getString(raw.conversationType);
-    const chatType = this.getString(raw.chatType);
+      getString(raw.conversationId) ||
+      getString(raw.chatId) ||
+      getString(raw.groupId);
+    const conversationType = getString(raw.conversationType);
+    const chatType = getString(raw.chatType);
     const isGroup = Boolean(groupId) || conversationType === '2' || chatType === 'group';
     const timestamp = this.toDate(raw.createAt, raw.timestamp, raw.timeStamp);
 
@@ -191,7 +162,7 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
       contentType: 'text',
       timestamp,
       metadata: {
-        msgType: this.getString(raw.msgtype) || this.getString(raw.msgType) || 'text',
+        msgType: getString(raw.msgtype) || getString(raw.msgType) || 'text',
         conversationType,
         chatType,
       },
@@ -221,15 +192,15 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
         }
         const node = item as Record<string, unknown>;
         const userId =
-          this.getString(node.dingtalkId) ||
-          this.getString(node.staffId) ||
-          this.getString(node.userId);
+          getString(node.dingtalkId) ||
+          getString(node.staffId) ||
+          getString(node.userId);
         if (!userId) {
           return null;
         }
         return {
           userId,
-          userName: this.getString(node.name),
+          userName: getString(node.name),
         };
       })
       .filter((item): item is { userId: string; userName?: string } => Boolean(item));
@@ -239,11 +210,11 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
 
   private toDate(...candidates: unknown[]): Date {
     for (const value of candidates) {
-      const num = this.getNumber(value);
+      const num = getNumber(value);
       if (typeof num === 'number' && Number.isFinite(num)) {
         return new Date(num);
       }
-      const str = this.getString(value);
+      const str = getString(value);
       if (str) {
         const parsed = Date.parse(str);
         if (Number.isFinite(parsed)) {
@@ -259,19 +230,11 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     options: SendMessageOptions
   ): Promise<ChannelResponse> {
     if (!this.started) {
-      return {
-        success: false,
-        error: 'Adapter not started',
-        timestamp: new Date(),
-      };
+      return createChannelError('Adapter not started');
     }
 
     if (!this.config.outgoingWebhookUrl) {
-      return {
-        success: false,
-        error: 'outgoingWebhookUrl is not configured',
-        timestamp: new Date(),
-      };
+      return createChannelError('outgoingWebhookUrl is not configured');
     }
 
     const endpoint = this.buildSignedWebhookUrl(this.config.outgoingWebhookUrl, this.config.outgoingSecret);
@@ -297,38 +260,23 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
         body: JSON.stringify(payload),
       });
 
-      const result = this.getRecord(await this.readJson(response));
+      const result = getRecord(await readJson(response));
       if (!response.ok) {
-        return {
-          success: false,
-          error: `DingTalk webhook HTTP ${response.status}`,
-          timestamp: new Date(),
-        };
+        return createChannelError(`DingTalk webhook HTTP ${response.status}`);
       }
 
-      const errCode = this.getNumber(result?.errcode) ?? this.getNumber(result?.code) ?? 0;
+      const errCode = getNumber(result?.errcode) ?? getNumber(result?.code) ?? 0;
       if (errCode !== 0) {
-        return {
-          success: false,
-          error:
-            this.getString(result?.errmsg) ||
-            this.getString(result?.msg) ||
-            `DingTalk webhook failed: ${String(errCode)}`,
-          timestamp: new Date(),
-        };
+        return createChannelError(
+          getString(result?.errmsg) ||
+          getString(result?.msg) ||
+          `DingTalk webhook failed: ${String(errCode)}`
+        );
       }
 
-      return {
-        success: true,
-        messageId: uuidv4(),
-        timestamp: new Date(),
-      };
+      return createChannelSuccess({ messageId: uuidv4() });
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'DingTalk webhook send failed',
-        timestamp: new Date(),
-      };
+      return createChannelError(error instanceof Error ? error.message : 'DingTalk webhook send failed');
     }
   }
 
@@ -345,39 +293,5 @@ export class DingTalkAdapter implements ChannelAdapter, WebhookCapableAdapter {
     url.searchParams.set('timestamp', timestamp);
     url.searchParams.set('sign', encodeURIComponent(sign));
     return url.toString();
-  }
-
-  private async readJson(response: Response): Promise<unknown> {
-    const text = await response.text();
-    if (!text) {
-      return {};
-    }
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      return { raw: text };
-    }
-  }
-
-  private getRecord(value: unknown): Record<string, unknown> | undefined {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return undefined;
-    }
-    return value as Record<string, unknown>;
-  }
-
-  private getString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
-  }
-
-  private getNumber(value: unknown): number | undefined {
-    if (typeof value === 'number') {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    }
-    return undefined;
   }
 }

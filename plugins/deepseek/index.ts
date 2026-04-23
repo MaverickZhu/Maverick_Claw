@@ -3,7 +3,10 @@ import type {
   ModelProvider, 
   ChatCompletionParams, 
   ChatCompletionChunk,
-  ChatMessage 
+  ChatMessage,
+  ModelProviderCapabilities,
+  Plugin,
+  PluginContext,
 } from '@maverick-claw/core';
 
 export interface DeepSeekConfig {
@@ -14,9 +17,27 @@ export interface DeepSeekConfig {
 export class DeepSeekProvider implements ModelProvider {
   id = 'deepseek';
   name = 'DeepSeek';
-  
+
   private config: DeepSeekConfig;
   private baseUrl: string;
+
+  private readonly capabilities: ModelProviderCapabilities = {
+    defaultModel: 'deepseek-chat',
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsVision: false,
+    supportsJsonMode: true,
+    parameterSupport: {
+      temperature: {
+        supported: true,
+        min: 0,
+        max: 2,
+        default: 0.7,
+      },
+      maxTokens: { supported: true },
+      toolChoice: { supported: true },
+    },
+  };
 
   constructor(config: DeepSeekConfig) {
     this.config = config;
@@ -113,8 +134,12 @@ export class DeepSeekProvider implements ModelProvider {
     ];
   }
 
+  getCapabilities(): ModelProviderCapabilities {
+    return this.capabilities;
+  }
+
   supportsTools(): boolean {
-    return true;
+    return this.capabilities.supportsTools;
   }
 }
 
@@ -124,3 +149,24 @@ export function createDeepSeekProvider(config: DeepSeekConfig): DeepSeekProvider
 }
 
 export default DeepSeekProvider;
+
+// Plugin export
+export const plugin: Plugin = {
+  name: 'deepseek',
+  version: '0.1.0',
+  async init(context: PluginContext) {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+      logger.info('DeepSeek API key not configured, plugin will not register provider');
+      return;
+    }
+
+    const provider = new DeepSeekProvider({ apiKey });
+    if (await provider.validateConfig()) {
+      context.modelRegistry.register(provider);
+      logger.info('DeepSeek provider registered via plugin');
+    } else {
+      logger.warn('DeepSeek provider validation failed');
+    }
+  },
+};

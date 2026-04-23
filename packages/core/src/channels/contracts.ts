@@ -55,7 +55,38 @@ const dingtalkChannelConfigSchema = z
     }
   });
 
+const wechatChannelConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    name: z.string().min(1).optional(),
+    puppet: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 const passthroughChannelConfigSchema = z.record(z.unknown()).default({});
+
+const wecomChannelConfigSchema = z.object({
+  corpId: z.string().min(1),
+  corpSecret: z.string().min(1),
+  agentId: z.string().min(1),
+  token: z.string().min(1).optional(),
+});
+
+const emailChannelConfigSchema = z.object({
+  smtpHost: z.string().min(1),
+  smtpPort: z.number().int().min(1).max(65535),
+  smtpUser: z.string().min(1),
+  smtpPassword: z.string().min(1),
+  smtpSecure: z.boolean().optional(),
+  imapHost: z.string().min(1),
+  imapPort: z.number().int().min(1).max(65535),
+  imapUser: z.string().min(1),
+  imapPassword: z.string().min(1),
+  imapSecure: z.boolean().optional(),
+  fromAddress: z.string().email(),
+  pollingInterval: z.number().int().min(5).optional(),
+  markAsRead: z.boolean().optional(),
+});
 
 const channelConfigSchemas = {
   webhook: webhookChannelConfigSchema,
@@ -63,9 +94,9 @@ const channelConfigSchemas = {
   lark: larkChannelConfigSchema,
   dingtalk: dingtalkChannelConfigSchema,
   webchat: passthroughChannelConfigSchema,
-  wechat: passthroughChannelConfigSchema,
-  wecom: passthroughChannelConfigSchema,
-  email: passthroughChannelConfigSchema,
+  wechat: wechatChannelConfigSchema,
+  wecom: wecomChannelConfigSchema,
+  email: emailChannelConfigSchema,
   telegram: passthroughChannelConfigSchema,
   slack: passthroughChannelConfigSchema,
 } as const;
@@ -119,8 +150,12 @@ const channelContractDescriptors: Record<ChannelType, ChannelContractDescriptor>
   wechat: {
     type: 'wechat',
     displayName: '微信',
-    auth: { inbound: ['third-party-signature'], outbound: ['third-party-token'] },
-    configFields: [],
+    auth: { inbound: ['wechaty-qr-scan'], outbound: ['wechaty-message-say'] },
+    configFields: [
+      { name: 'enabled', required: true, description: '是否启用微信适配器（需安装 wechaty）' },
+      { name: 'name', required: false, description: 'Bot 名称（用于 wechaty 缓存）' },
+      { name: 'puppet', required: false, description: 'Puppet 提供者（如 wechaty-puppet-wechat）' },
+    ],
     routing: defaultRoutingDescriptor,
   },
   dingtalk: {
@@ -150,15 +185,34 @@ const channelContractDescriptors: Record<ChannelType, ChannelContractDescriptor>
   wecom: {
     type: 'wecom',
     displayName: '企业微信',
-    auth: { inbound: ['third-party-signature'], outbound: ['third-party-token'] },
-    configFields: [],
+    auth: { inbound: ['url-verification (optional)'], outbound: ['corp-credential'] },
+    configFields: [
+      { name: 'corpId', required: true, description: '企业微信 CorpID' },
+      { name: 'corpSecret', required: true, description: '应用 Secret' },
+      { name: 'agentId', required: true, description: '应用 AgentID' },
+      { name: 'token', required: false, description: '回调校验 Token（明文模式 URL 验证）' },
+    ],
     routing: defaultRoutingDescriptor,
   },
   email: {
     type: 'email',
     displayName: '邮件',
-    auth: { inbound: ['smtp/imap-auth'], outbound: ['smtp-auth'] },
-    configFields: [],
+    auth: { inbound: ['imap-auth'], outbound: ['smtp-auth'] },
+    configFields: [
+      { name: 'smtpHost', required: true, description: 'SMTP 服务器地址' },
+      { name: 'smtpPort', required: true, description: 'SMTP 端口（如 587/465/25）' },
+      { name: 'smtpUser', required: true, description: 'SMTP 用户名' },
+      { name: 'smtpPassword', required: true, description: 'SMTP 密码' },
+      { name: 'smtpSecure', required: false, description: 'SMTP 是否使用 TLS（默认端口 465 时自动启用）' },
+      { name: 'imapHost', required: true, description: 'IMAP 服务器地址' },
+      { name: 'imapPort', required: true, description: 'IMAP 端口（如 993/143）' },
+      { name: 'imapUser', required: true, description: 'IMAP 用户名' },
+      { name: 'imapPassword', required: true, description: 'IMAP 密码' },
+      { name: 'imapSecure', required: false, description: 'IMAP 是否使用 TLS（默认端口 993 时自动启用）' },
+      { name: 'fromAddress', required: true, description: '发件人邮箱地址' },
+      { name: 'pollingInterval', required: false, description: 'IMAP 轮询间隔（秒，最小 5，默认 60）' },
+      { name: 'markAsRead', required: false, description: '接收后是否标记为已读（默认 true）' },
+    ],
     routing: defaultRoutingDescriptor,
   },
   webhook: {

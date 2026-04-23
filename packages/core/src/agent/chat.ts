@@ -9,6 +9,8 @@ import { getToolResultFormatter } from '../tools/formatter.js';
 import { getToolOrchestrator } from '../tools/orchestrator.js';
 import type { ToolCall, ToolResult } from '../tools/types.js';
 import { logger } from '../utils/logger.js';
+import { getStatsService, type StatsService } from '../stats/service.js';
+import { recordChatTokens, recordChatLatency, recordChatRequest } from '../monitoring/metrics.js';
 
 export interface ChatStreamOptions {
   sessionId: string;
@@ -25,7 +27,8 @@ export class ChatService {
 
   constructor(
     private sessionManager: SessionManager,
-    private messageManager: MessageManager
+    private messageManager: MessageManager,
+    private statsService?: StatsService
   ) {}
 
   async *streamChat(options: ChatStreamOptions): AsyncGenerator<{ content: string; done: boolean }> {
@@ -105,6 +108,9 @@ export class ChatService {
       // First pass: stream completion with tools
       let fullContent = '';
       const toolCallMap = new Map<string, ToolCall>();
+      let totalPromptTokens = 0;
+      let totalCompletionTokens = 0;
+      const chatStartTime = Date.now();
       
       const stream = provider.chatCompletion({
         model: actualModel,
@@ -130,6 +136,12 @@ export class ChatService {
               logger.info({ tool: tc.name, id: tc.id }, 'Tool call received');
             }
           }
+        }
+
+        // Capture usage from final chunk
+        if (chunk.usage) {
+          totalPromptTokens = chunk.usage.promptTokens || totalPromptTokens;
+          totalCompletionTokens = chunk.usage.completionTokens || totalCompletionTokens;
         }
 
         if (chunk.done) {
@@ -202,10 +214,30 @@ export class ChatService {
             fullContent += chunk.content;
             yield { content: chunk.content, done: false };
           }
+          if (chunk.usage) {
+            totalPromptTokens = chunk.usage.promptTokens || totalPromptTokens;
+            totalCompletionTokens = chunk.usage.completionTokens || totalCompletionTokens;
+          }
           if (chunk.done) {
             yield { content: '', done: true };
           }
         }
+      }
+
+      // Record usage and metrics
+      const latencyMs = Date.now() - chatStartTime;
+      if (this.statsService) {
+        this.statsService.recordUsage({
+          sessionId,
+          modelId: actualModel,
+          provider: providerId,
+          promptTokens: totalPromptTokens,
+          completionTokens: totalCompletionTokens,
+          latencyMs,
+        });
+        recordChatRequest({ provider: providerId, model: actualModel });
+        recordChatTokens({ provider: providerId, model: actualModel, promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens });
+        recordChatLatency({ provider: providerId, model: actualModel, latencyMs });
       }
 
       // Save assistant message
@@ -274,10 +306,24 @@ export class ChatService {
     return listWorkflowTemplates();
   }
 
-  private async getConversationHistory(sessionId: string): Promise<ChatMessage[]> {
+  private async getConversationHistory(sessionId: string, maxContextMessages: number = 20): Promise<ChatMessage[]> {
     const messages = await this.messageManager.listMessages(sessionId);
-    
-    return messages.map(m => ({
+
+    // Keep system messages + last N messages to avoid context window overflow
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const nonSystemMessages = messages.filter(m => m.role !== 'system');
+
+    let selectedMessages: typeof messages;
+    if (nonSystemMessages.length > maxContextMessages) {
+      selectedMessages = [
+        ...systemMessages,
+        ...nonSystemMessages.slice(-maxContextMessages),
+      ];
+    } else {
+      selectedMessages = messages;
+    }
+
+    return selectedMessages.map(m => ({
       role: m.role as 'system' | 'user' | 'assistant' | 'tool',
       content: m.content,
       ...(m.toolCallId && { toolCallId: m.toolCallId }),

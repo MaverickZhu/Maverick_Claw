@@ -364,7 +364,7 @@ export class WebSocketClient {
   }
 
   private getToken(): string | undefined {
-    const token = localStorage.getItem('maverick_auth_token');
+    const token = localStorage.getItem('token');
     return token || undefined;
   }
 }

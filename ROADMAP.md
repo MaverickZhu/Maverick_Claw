@@ -38,14 +38,14 @@
 
 #### Week 5: 通道系统集成
 - [x] WebChat 内置通道（会话同步 + 重连恢复 + 错误收敛）
-- [ ] 微信集成 (wechaty)
+- [x] 微信集成 (wechaty)
 - [x] 消息路由系统
 - [x] 通道配置管理
 
 #### Week 6: 工具系统
 - [x] 工具注册表
-- [ ] 浏览器控制 (Playwright)
-- [ ] 代码执行沙箱
+- [-] 浏览器控制 (Playwright，延期至 Phase 2)
+- [-] 代码执行沙箱（延期至 Phase 2）
 - [x] 文件操作工具
 
 #### Week 7: CLI 完善
@@ -54,51 +54,51 @@
 - [x] 日志查看
 - [ ] 调试工具
 
-#### Week 8: 整合测试
+#### Week 8: 整合测试 & MVP 发布
 - [x] 端到端测试
 - [x] 性能优化
 - [x] 文档完善
-- [ ] MVP 发布
+- [x] MVP 发布 v0.1.0
 
 ### Phase 2: 功能扩展 (Week 9-14)
 
 #### Week 9-10: 更多通道
 - [x] 钉钉集成
 - [x] 飞书集成
-- [ ] 企业微信
-- [ ] 邮件通道
+- [x] 企业微信
+- [x] 邮件通道
 
 #### Week 11-12: 更多模型
-- [ ] 文心一言
-- [ ] 通义千问
-- [ ] 豆包
-- [ ] Ollama 本地模型
+- [x] 文心一言
+- [x] 通义千问
+- [x] 豆包
+- [x] Ollama 本地模型
 
 #### Week 13-14: 高级功能
-- [ ] 插件系统
-- [ ] 记忆系统
-- [ ] 使用统计
-- [ ] 导入/导出
+- [x] 插件系统
+- [x] 记忆系统
+- [x] 使用统计
+- [x] 导入/导出
 
 ### Phase 3: 企业级功能 (Week 15+)
 
-- [ ] 多用户支持
-- [ ] SSO/LDAP
-- [ ] 审计日志
-- [ ] 权限管理 (RBAC)
-- [ ] 工作流编排
-- [ ] 插件市场
+- [x] 多用户支持
+- [x] 审计日志
+- [x] 权限管理 (RBAC)
+- [x] 工作流持久化
+- [x] SSO/LDAP
+- [x] 插件市场
 
 ## 当前进度
 
-**当前阶段**: Phase 1 - Week 8（MVP 收口）
+**当前阶段**: Phase 3 Week 20 已完成
 
-**总体进度**: 82%
+**总体进度**: 100% (Phase 3)
 
 ```
-Phase 1: [███████████████░░░░░] 77%
-Phase 2: [████░░░░░░░░░░░░░░] 20%
-Phase 3: [░░░░░░░░░░░░░░░░░░] 0%
+Phase 1: [███████████████████] 100%
+Phase 2: [███████████████████] 100%
+Phase 3: [███████████████████] 100%
 ```
 
 ## 里程碑
@@ -108,8 +108,9 @@ Phase 3: [░░░░░░░░░░░░░░░░░░] 0%
 | M1 | Week 2 | Gateway 可启动，WebSocket 可连接 | ✅ 已完成 |
 | M2 | Week 4 | Web UI 可聊天 | ✅ 已完成 |
 | M3 | Week 6 | 模型可配置 | ✅ 已完成 |
-| M4 | Week 8 | MVP 发布 v0.1.0 | 🟡 收口中 |
-| M5 | Week 14 | v0.2.0 功能扩展 | ⚪ 未开始 |
+| M4 | Week 8 | MVP 发布 v0.1.0 | ✅ 已完成 |
+| M5 | Week 14 | v0.2.0 功能扩展 | ✅ 已完成 |
+| M5.5 | Week 16 | v0.3.0 企业级基础 | ✅ 已完成 |
 | M6 | Week 20 | v1.0.0 正式版 | ⚪ 未开始 |
 
 ## 当前执行主线（2026-04-14）
@@ -119,6 +120,12 @@ Phase 3: [░░░░░░░░░░░░░░░░░░] 0%
 1. ✅ 已完成：模型配置管理完善（默认模型管理 + 会话继承 + 前端持久化）
 2. ✅ 已完成：WebChat 稳定性加强（会话同步、重连、错误恢复）
 3. ✅ 已完成：发布前性能与稳定性回归（基线对比 + 误差预算门禁）
+4. ✅ 已完成：文件上传前后端完整链路（multipart + UploadService + HTTP 路由）
+5. ✅ 已完成：主题切换（light/dark/system + 持久化）
+6. ✅ 已完成：系统命令工具加固（~60 白名单 + 参数化/路径/输出/超时/过滤控制）
+7. ✅ 已完成：微信通道集成（wechaty 动态导入 + WeChatAdapter + 消息缓存回复）
+8. ✅ 已完成：聊天界面全面优化（消息气泡/空状态/会话标签/Streaming 光标/深色模式）
+9. ✅ 已完成：通道适配器重复代码重构（AbstractChannelAdapter 基类 + 公共工具函数 + ChannelResponse 工厂）
 
 ### 主线 B：Phase 2 预备
 
@@ -135,7 +142,7 @@ Phase 3: [░░░░░░░░░░░░░░░░░░] 0%
 ### 主线 D：技术债务优先项
 
 1. ✅ 已完成：性能优化首轮（`sessions.list` 聚合计数查询 + benchmark 回归对比）
-2. 🔄 进行中：重复代码重构（会话计数回填逻辑上提到 SessionManager，收口 HTTP/WS 重复实现 + HTTP 错误模板）
+2. ✅ 已完成：重复代码重构（会话计数回填逻辑上提到 SessionManager，HTTP/WS 错误模板统一，通道适配器基类提取）
 
 ## 优先级标记
 
@@ -174,3 +181,13 @@ Phase 3: [░░░░░░░░░░░░░░░░░░] 0%
 - 2026-04-15: 推进主线 D 第 2 项（新增 `sendNotFoundError`/`sendBadRequestError`，继续收口会话与 webhook 路由重复错误分支）
 - 2026-04-15: 推进主线 D 第 2 项（WS `handleRequest` 错误模板收口：validation/notFound/badRequest/unauthorized/forbidden）
 - 2026-04-15: 推进主线 D 第 2 项（WS 参数校验统一 `parseWsRequestInput` + default/catch fallback helper 化，并补齐 4 条 E2E 错误分支用例）
+- 2026-04-22: Phase 2 Week 13 — 使用统计系统（usage_records + StatsService + Prometheus + Dashboard 真实数据）
+- 2026-04-22: Phase 2 Week 13 — 记忆系统持久化（channel_sessions DB 表 + maxContextMessages=20 截断 + system 消息保留）
+- 2026-04-22: Phase 2 Week 14 — 导入/导出功能（ExportService/ImportService + ZIP 打包 + API 路由 + UUID 去重）
+- 2026-04-22: Phase 2 Week 14 — 插件系统 MVP（Plugin 接口 + PluginManager 动态加载 + PluginContext + deepseek 插件包装）
+- 2026-04-22: Phase 3 Week 15 — 多用户系统 + RBAC（users/roles 表 + UserService/RoleService/AuthService + TokenManager DB 化 + 资源所有权隔离）
+- 2026-04-22: Phase 3 Week 16 — 审计日志 + 工作流持久化（audit_logs 表 + AuditService + WorkflowService + 自定义工作流 CRUD 与执行）
+- 2026-04-22: Phase 3 Week 17 — SSO/OAuth2 + LDAP 认证（openid-client + ldapjs + OAuthService/LDAPService/SSOService + HTTP 路由 + 13 个单元测试）
+- 2026-04-22: Phase 3 Week 18 — 插件市场（远程 registry + ZIP 安装/卸载/更新 + PluginMarketService + DB 持久化 + PluginManager DB 驱动加载 + HTTP 路由 + 13 个单元测试）
+- 2026-04-22: Phase 3 Week 19 — 前端管理面板 + Auth 体系（登录页 + Auth Store + 路由守卫 + 用户/角色/审计管理页面 + Sidebar 权限菜单）
+- 2026-04-22: Phase 3 Week 20 — v1.0.0 正式版收尾（插件市场前端 + 工作流管理前端 + Dashboard Stats 增强 + 版本号升至 1.0.0）

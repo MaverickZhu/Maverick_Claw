@@ -173,7 +173,10 @@ export class OpenAIProvider implements ModelProvider {
             yield {
               content,
               done: finishReason === 'stop',
-              usage: data.usage,
+              usage: data.usage ? {
+                promptTokens: data.usage.prompt_tokens || 0,
+                completionTokens: data.usage.completion_tokens || 0,
+              } : undefined,
               toolCalls: toolCalls?.map((toolCall) => ({
                 id: toolCall.id,
                 name: toolCall.function.name,

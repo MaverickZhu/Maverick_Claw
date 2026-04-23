@@ -1,5 +1,14 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { apiPost } from '../api/client';
+
+export interface FileAttachment {
+  fileId: string;
+  url: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
 
 export interface Message {
   id: string;
@@ -7,6 +16,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
+  attachments?: FileAttachment[];
 }
 
 export interface RemoteMessageSnapshot {
@@ -87,17 +97,7 @@ export const useChatStore = create<ChatState>()(
         const title = options?.title ?? '新会话';
         // Create session via API
         try {
-          const response = await fetch('/api/sessions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, modelId }),
-          });
-          
-          if (!response.ok) {
-            throw new Error('Failed to create session');
-          }
-          
-          const session = await response.json();
+          const session = await apiPost<{ id: string; title: string; modelId?: string; createdAt: string; updatedAt: string }>('/api/sessions', { title, modelId });
           
           const newSession: Session = {
             id: session.id,

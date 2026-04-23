@@ -1,34 +1,34 @@
 {
-  "name": "@maverick-claw/shared",
-  "version": "0.1.0",
-  "description": "Shared types and utilities for Maverick_Claw",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./protocol": {
-      "types": "./dist/protocol/index.d.ts",
-      "default": "./dist/protocol/index.js"
-    },
-    "./types": {
-      "types": "./dist/types/index.d.ts",
-      "default": "./dist/types/index.js"
-    }
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "lint": "eslint src/**/*.ts"
-  },
-  "devDependencies": {
-    "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
-  }
+    "name":  "@maverick-claw/shared",
+    "version":  "1.0.0",
+    "description":  "Shared types and utilities for Maverick_Claw",
+    "type":  "module",
+    "main":  "./dist/index.js",
+    "types":  "./dist/index.d.ts",
+    "exports":  {
+                    ".":  {
+                              "types":  "./dist/index.d.ts",
+                              "default":  "./dist/index.js"
+                          },
+                    "./protocol":  {
+                                       "types":  "./dist/protocol/index.d.ts",
+                                       "default":  "./dist/protocol/index.js"
+                                   },
+                    "./types":  {
+                                    "types":  "./dist/types/index.d.ts",
+                                    "default":  "./dist/types/index.js"
+                                }
+                },
+    "scripts":  {
+                    "build":  "tsc",
+                    "dev":  "tsc --watch",
+                    "clean":  "rm -rf dist",
+                    "typecheck":  "tsc --noEmit",
+                    "test":  "vitest run",
+                    "lint":  "eslint src/**/*.ts"
+                },
+    "devDependencies":  {
+                            "typescript":  "^5.4.5",
+                            "vitest":  "^1.6.0"
+                        }
 }

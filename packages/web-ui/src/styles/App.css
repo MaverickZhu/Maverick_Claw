@@ -13,6 +13,21 @@
   min-height: calc(100vh - 64px);
 }
 
+/* Chat streaming cursor blink animation */
+@keyframes chat-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Dark mode overrides */
+.dark .main-content {
+  background: #141414;
+}
+
+.dark .app-layout {
+  background: #141414;
+}
+
 @media (max-width: 768px) {
   .main-layout {
     margin-left: 0;

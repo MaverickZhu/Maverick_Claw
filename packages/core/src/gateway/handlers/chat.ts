@@ -8,10 +8,11 @@ export async function handleChatStream(
   socket: WebSocket,
   options: GatewayOptions
 ): Promise<void> {
-  const { sessionId, content, modelId } = request.params as {
+  const { sessionId, content, modelId, attachments } = request.params as {
     sessionId: string;
     content: string;
     modelId?: string;
+    attachments?: Array<{ fileId: string; url: string; name: string; mimeType: string; size: number }>;
   };
 
   if (!sessionId || !content) {
@@ -32,6 +33,7 @@ export async function handleChatStream(
       sessionId,
       role: 'user',
       content,
+      metadata: attachments && attachments.length > 0 ? { attachments } : undefined,
     });
 
     // Get conversation history

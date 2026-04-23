@@ -6,6 +6,10 @@ import { getTokenManager } from './auth/token.js';
 import { getModelRegistry } from './agent/model.js';
 import { getDeepSeekProvider } from './models/providers/deepseek.js';
 import { getOpenAIProvider } from './models/providers/openai.js';
+import { getOllamaProvider } from './models/providers/ollama.js';
+import { getQwenProvider } from './models/providers/qwen.js';
+import { getErnieProvider } from './models/providers/ernie.js';
+import { getDoubaoProvider } from './models/providers/doubao.js';
 import { logger } from './utils/logger.js';
 import cron from 'node-cron';
 import {
@@ -21,7 +25,7 @@ export async function main() {
   try {
     await initErrorTracking({
       serviceName: 'maverick-claw-gateway',
-      release: 'maverick-claw@0.1.0',
+      release: 'maverick-claw@1.0.0',
     });
 
     // Load configuration
@@ -60,6 +64,46 @@ export async function main() {
       modelRegistry.register(openai);
     }
 
+    // Register Ollama if available
+    const ollama = getOllamaProvider();
+    if (await ollama.validateConfig()) {
+      modelRegistry.register(ollama);
+      logger.info('Registered Ollama provider');
+    }
+
+    // Register Qwen if API key is configured
+    const qwenConfig = config.models.find(m => m.provider === 'qwen');
+    if (qwenConfig?.apiKey) {
+      const qwen = getQwenProvider({
+        apiKey: qwenConfig.apiKey,
+        baseUrl: qwenConfig.baseUrl,
+      });
+      modelRegistry.register(qwen);
+      logger.info('Registered Qwen provider');
+    }
+
+    // Register ERNIE if API key is configured
+    const ernieConfig = config.models.find(m => m.provider === 'ernie');
+    if (ernieConfig?.apiKey) {
+      const ernie = getErnieProvider({
+        apiKey: ernieConfig.apiKey,
+        baseUrl: ernieConfig.baseUrl,
+      });
+      modelRegistry.register(ernie);
+      logger.info('Registered ERNIE provider');
+    }
+
+    // Register Doubao if API key is configured
+    const doubaoConfig = config.models.find(m => m.provider === 'doubao');
+    if (doubaoConfig?.apiKey) {
+      const doubao = getDoubaoProvider({
+        apiKey: doubaoConfig.apiKey,
+        baseUrl: doubaoConfig.baseUrl,
+      });
+      modelRegistry.register(doubao);
+      logger.info('Registered Doubao provider');
+    }
+
     // Start token cleanup job
     const tokenManager = getTokenManager();
     cron.schedule('0 */6 * * *', () => {
@@ -76,7 +120,7 @@ export async function main() {
 
     await gateway.start();
 
-    logger.info(`🦅 Maverick_Claw Gateway v0.1.0 started`);
+    logger.info(`🦅 Maverick_Claw Gateway v1.0.0 started`);
     logger.info(`   Web UI: http://${host}:${port}`);
     logger.info(`   API: http://${host}:${port}/api`);
     logger.info(`   WebSocket: ws://${host}:${port}/ws`);

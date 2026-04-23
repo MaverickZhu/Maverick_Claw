@@ -209,7 +209,10 @@ export class KimiProvider implements ModelProvider {
                   yield {
                     content,
                     done: finishReason === 'stop',
-                    usage: data.usage,
+                    usage: data.usage ? {
+                      promptTokens: data.usage.prompt_tokens || 0,
+                      completionTokens: data.usage.completion_tokens || 0,
+                    } : undefined,
                     toolCalls: toolCalls?.map((tc: { id: string; function: { name: string; arguments: string } }) => ({
                       id: tc.id,
                       name: tc.function.name,
@@ -233,7 +236,10 @@ export class KimiProvider implements ModelProvider {
               yield {
                 content,
                 done: true,
-                usage: data.usage,
+                usage: data.usage ? {
+                  promptTokens: data.usage.prompt_tokens || 0,
+                  completionTokens: data.usage.completion_tokens || 0,
+                } : undefined,
               };
             } catch (e) {
               // Ignore parse errors in final buffer

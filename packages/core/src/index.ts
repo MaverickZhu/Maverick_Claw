@@ -107,6 +107,36 @@ export {
 export type { ErrorCaptureContext } from './monitoring/error-tracking.js';
 
 // Queue exports
+// Auth exports
+export { UserService } from './auth/user-service.js';
+export type { CreateUserParams, UpdateUserParams } from './auth/user-service.js';
+export { RoleService } from './auth/role-service.js';
+export type { CreateRoleParams } from './auth/role-service.js';
+export { AuthService } from './auth/service.js';
+export type { LoginResult } from './auth/service.js';
+export { hashPassword, verifyPassword } from './auth/password.js';
+export { isAdmin, requireOwnership } from './auth/ownership.js';
+export { ADMIN_SCOPE, Scope, USER_DEFAULT_SCOPES, hasScope, hasAllScopes, hasAnyScope } from './auth/scopes.js';
+
+// Audit exports
+export { AuditService } from './audit/service.js';
+export type { AuditEvent, AuditQueryFilters } from './audit/service.js';
+
+// Workflow exports
+export { WorkflowService } from './workflows/service.js';
+export type { CreateWorkflowParams } from './workflows/service.js';
+
+// SSO exports
+export { OAuthService } from './auth/oauth-service.js';
+export type { OAuthProviderConfig, OAuthLoginResult } from './auth/oauth-service.js';
+export { LDAPService } from './auth/ldap-service.js';
+export type { LDAPConfig, LDAPLoginResult } from './auth/ldap-service.js';
+export { SSOService } from './auth/sso-service.js';
+
+// Plugin exports
+export { PluginManager } from './plugins/manager.js';
+export type { Plugin, PluginContext, PluginManifest } from './plugins/types.js';
+
 export { QueueService, getQueueService, getExistingQueueService, closeQueueService } from './queue/index.js';
 export { getQueueConnection, closeQueueConnection } from './queue/index.js';
 export { createMessageProcessor, createWebhookProcessor } from './queue/index.js';

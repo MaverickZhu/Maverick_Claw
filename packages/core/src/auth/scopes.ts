@@ -14,6 +14,8 @@ export const Scope = {
   ConfigWrite: 'config:write',
   QueueRead: 'queue:read',
   QueueWrite: 'queue:write',
+  PluginsRead: 'plugins:read',
+  PluginsWrite: 'plugins:write',
 } as const;
 
 export type ScopeValue = (typeof Scope)[keyof typeof Scope];

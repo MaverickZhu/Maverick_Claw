@@ -1,12 +1,13 @@
-import type { 
-  ChannelAdapter, 
-  ChannelMessage, 
-  SendMessageOptions, 
+import type {
+  ChannelMessage,
   ChannelResponse,
   ChannelType,
   AdapterWebhookResult,
   WebhookCapableAdapter,
+  SendMessageOptions,
 } from '../types.js';
+import { AbstractChannelAdapter } from './base.js';
+import { createChannelError, createChannelSuccess } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -18,25 +19,19 @@ export interface WebhookAdapterConfig {
 
 /**
  * Generic Webhook Adapter
- * 
+ *
  * This adapter provides a generic webhook endpoint that external services
  * can send messages to. It can be used as a base for implementing
  * specific channel adapters.
  */
-export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
-  id: string;
+export class WebhookAdapter extends AbstractChannelAdapter implements WebhookCapableAdapter {
   type: ChannelType = 'custom';
-  name: string;
-  
+
   private config: WebhookAdapterConfig;
-  private messageHandlers: Array<(message: ChannelMessage) => Promise<void> | void> = [];
   private responseHandlers = new Map<string, (response: ChannelResponse) => void>();
-  private initialized = false;
-  private started = false;
 
   constructor(id: string, name: string, config: WebhookAdapterConfig) {
-    this.id = id;
-    this.name = name;
+    super(id, name);
     this.config = {
       verifySignature: false,
       ...config,
@@ -55,33 +50,14 @@ export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
   }
 
   async start(): Promise<void> {
-    if (!this.initialized) {
-      throw new Error('Adapter not initialized');
-    }
-    this.started = true;
+    await super.start();
     logger.info(`Webhook adapter ${this.id} started`);
   }
 
   async stop(): Promise<void> {
-    this.started = false;
-    this.messageHandlers = [];
+    await super.stop();
     this.responseHandlers.clear();
     logger.info(`Webhook adapter ${this.id} stopped`);
-  }
-
-  async health(): Promise<boolean> {
-    return this.initialized && this.started;
-  }
-
-  onMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    this.messageHandlers.push(handler);
-  }
-
-  offMessage(handler: (message: ChannelMessage) => Promise<void> | void): void {
-    const index = this.messageHandlers.indexOf(handler);
-    if (index >= 0) {
-      this.messageHandlers.splice(index, 1);
-    }
   }
 
   /**
@@ -106,14 +82,7 @@ export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
       };
     }
 
-    // Notify handlers
-    for (const handler of this.messageHandlers) {
-      try {
-        await handler(message);
-      } catch (error) {
-        logger.error({ err: error, adapterId: this.id }, 'Message handler error');
-      }
-    }
+    await this.notifyHandlers(message);
 
     return {
       kind: 'message',
@@ -121,44 +90,34 @@ export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
     };
   }
 
-  async sendMessage(channelId: string, options: SendMessageOptions): Promise<ChannelResponse> {
+  async sendMessage(_channelId: string, options: SendMessageOptions): Promise<ChannelResponse> {
     if (!this.started) {
-      return {
-        success: false,
-        error: 'Adapter not started',
-        timestamp: new Date(),
-      };
+      return createChannelError('Adapter not started');
     }
 
-    // For webhook adapter, we store the response handler
-    // and wait for the external system to poll or callback
     const messageId = uuidv4();
-    
-    logger.debug({ 
-      adapterId: this.id, 
-      channelId, 
-      messageId,
-      content: options.content.substring(0, 100) 
-    }, 'Message queued for webhook delivery');
 
-    return {
-      messageId,
-      success: true,
-      timestamp: new Date(),
-    };
+    logger.debug(
+      {
+        adapterId: this.id,
+        messageId,
+        content: options.content.substring(0, 100),
+      },
+      'Message queued for webhook delivery'
+    );
+
+    return createChannelSuccess({ messageId });
   }
 
   async sendDirectMessage(userId: string, options: SendMessageOptions): Promise<ChannelResponse> {
-    // For webhook adapter, DM is same as channel message
     return this.sendMessage(userId, options);
   }
 
   async replyToMessage(
-    messageId: string, 
-    channelId: string, 
+    messageId: string,
+    channelId: string,
     options: SendMessageOptions
   ): Promise<ChannelResponse> {
-    // Include reply metadata
     const replyOptions = {
       ...options,
       metadata: {
@@ -170,15 +129,12 @@ export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
   }
 
   private parsePayload(payload: unknown): ChannelMessage | null {
-    // Generic payload parser
-    // Expects format: { userId, content, [groupId], [mentions], [metadata] }
-    
     if (typeof payload !== 'object' || payload === null) {
       return null;
     }
 
     const p = payload as Record<string, unknown>;
-    
+
     if (!p.userId || !p.content) {
       return null;
     }
@@ -201,17 +157,11 @@ export class WebhookAdapter implements ChannelAdapter, WebhookCapableAdapter {
   }
 
   private verifySignature(_payload: unknown, _signature: string): boolean {
-    // Simple HMAC verification example
-    // In production, use proper crypto
     if (!this.config.secret) {
       return true;
     }
-    
     // TODO: Implement proper HMAC-SHA256 verification
-    // const expected = crypto.createHmac('sha256', this.config.secret).update(JSON.stringify(payload)).digest('hex');
-    // return expected === signature;
-    
-    return true; // Placeholder
+    return true;
   }
 
   getWebhookPath(): string {
